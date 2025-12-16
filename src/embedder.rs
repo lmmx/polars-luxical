@@ -9,6 +9,7 @@ use ndarray::{Array1, Array2, Axis};
 use sprs::{CsMat, TriMat};
 use thiserror::Error;
 use tokenizers::Tokenizer;
+use bytemuck::cast_slice;
 
 use crate::ngrams::extract_ngrams_hashed;
 use crate::tfidf::apply_tfidf_and_normalize;
@@ -56,22 +57,25 @@ impl LuxicalEmbedder {
     fn load_from_reader<R: Read + std::io::Seek>(reader: R) -> Result<Self> {
         let mut npz = NpzReader::new(reader)?;
 
-        // Load tokenizer from JSON bytes
-        let tokenizer_bytes: Vec<u8> = npz.read_array("tokenizer")?;
+        // Load tokenizer from JSON bytes (stored as uint8 array)
+        let tokenizer_bytes: Vec<u8> = npz.read_array_u8("tokenizer")?;
         let tokenizer_json = String::from_utf8(tokenizer_bytes)
             .map_err(|e| LuxicalError::NpzParse(format!("Invalid UTF-8 in tokenizer: {}", e)))?;
         let tokenizer = Tokenizer::from_bytes(tokenizer_json.as_bytes())
             .map_err(|e| LuxicalError::Tokenizer(e.to_string()))?;
 
         // Load recognized ngrams to determine max_ngram_length
-        let recognized_ngrams: Array2<i64> = npz.read_array_2d("recognized_ngrams")?;
-        let max_ngram_length = recognized_ngrams.ncols();
+        // Note: stored as uint32 in the file, shape (2000000, 5)
+        let (recognized_ngrams_flat, recognized_ngrams_shape) = npz.read_array_u32("recognized_ngrams")?;
+        let max_ngram_length = if recognized_ngrams_shape.len() == 2 {
+            recognized_ngrams_shape[1]
+        } else {
+            5 // default
+        };
 
         // Build ngram hash to index map
-        let ngram_hash_to_idx_keys: Array1<i64> =
-            npz.read_array_1d("ngram_hash_to_ngram_idx_keys")?;
-        let ngram_hash_to_idx_values: Array1<u32> =
-            npz.read_array_1d("ngram_hash_to_ngram_idx_values")?;
+        let (ngram_hash_to_idx_keys, _) = npz.read_array_i64("ngram_hash_to_ngram_idx_keys")?;
+        let (ngram_hash_to_idx_values, _) = npz.read_array_u32("ngram_hash_to_ngram_idx_values")?;
 
         let mut ngram_hash_to_idx = HashMap::with_capacity(ngram_hash_to_idx_keys.len());
         for (k, v) in ngram_hash_to_idx_keys
@@ -82,13 +86,25 @@ impl LuxicalEmbedder {
         }
 
         // Load IDF values
-        let idf_values: Array1<f32> = npz.read_array_1d("idf_values")?;
+        let (idf_values_vec, _) = npz.read_array_f32("idf_values")?;
+        let idf_values = Array1::from_vec(idf_values_vec);
 
         // Load neural network layers
-        let num_layers: usize = npz.read_scalar("num_nn_layers")?;
+        // num_nn_layers is stored as shape (1,), not a scalar
+        let (num_layers_vec, _) = npz.read_array_i64("num_nn_layers")?;
+        let num_layers = num_layers_vec[0] as usize;
+
         let mut layers = Vec::with_capacity(num_layers);
         for i in 0..num_layers {
-            let layer: Array2<f32> = npz.read_array_2d(&format!("nn_layer_{}", i))?;
+            let (layer_vec, layer_shape) = npz.read_array_f32(&format!("nn_layer_{}", i))?;
+            if layer_shape.len() != 2 {
+                return Err(LuxicalError::NpzParse(format!(
+                    "Expected 2D layer, got {}D",
+                    layer_shape.len()
+                )));
+            }
+            let layer = Array2::from_shape_vec((layer_shape[0], layer_shape[1]), layer_vec)
+                .map_err(|e| LuxicalError::NpzParse(e.to_string()))?;
             layers.push(layer);
         }
 
@@ -243,10 +259,10 @@ fn normalize_rows_inplace(arr: &mut Array2<f32>) {
 }
 
 // ============================================================================
-// NPZ Reader - minimal implementation for loading Luxical model files
+// NPZ Reader - optimized implementation for loading Luxical model files
 // ============================================================================
 
-use std::io::{Cursor, Seek};
+use std::io::Seek;
 
 struct NpzReader<R: Read + Seek> {
     archive: zip::ZipArchive<R>,
@@ -277,7 +293,7 @@ impl<R: Read + Seek> NpzReader<R> {
         let header_str = std::str::from_utf8(&data[header_start..header_end])
             .map_err(|e| LuxicalError::NpzParse(format!("Invalid header UTF-8: {}", e)))?;
 
-        // Parse the header dict (simplified - assumes specific format)
+        // Parse the header dict
         let shape = Self::parse_shape(header_str)?;
         let dtype = Self::parse_dtype(header_str)?;
 
@@ -285,11 +301,13 @@ impl<R: Read + Seek> NpzReader<R> {
     }
 
     fn parse_shape(header: &str) -> Result<Vec<usize>> {
-        // Find 'shape': (...)
+        let shape_marker = "'shape':";
         let shape_start = header
-            .find("'shape':")
+            .find(shape_marker)
             .ok_or_else(|| LuxicalError::NpzParse("No shape in header".to_string()))?;
-        let rest = &header[shape_start..];
+        let rest = &header[shape_start + shape_marker.len()..];
+        let rest = rest.trim_start();
+
         let paren_start = rest
             .find('(')
             .ok_or_else(|| LuxicalError::NpzParse("No shape tuple".to_string()))?;
@@ -314,22 +332,29 @@ impl<R: Read + Seek> NpzReader<R> {
     }
 
     fn parse_dtype(header: &str) -> Result<String> {
-        // Find 'descr': '...'
+        let descr_marker = "'descr':";
         let descr_start = header
-            .find("'descr':")
+            .find(descr_marker)
             .ok_or_else(|| LuxicalError::NpzParse("No descr in header".to_string()))?;
-        let rest = &header[descr_start..];
-        let quote_start = rest
-            .find('\'')
-            .ok_or_else(|| LuxicalError::NpzParse("No descr quote".to_string()))?;
-        let rest = &rest[quote_start + 1..];
+        let rest = &header[descr_start + descr_marker.len()..];
+        let rest = rest.trim_start();
+
+        if !rest.starts_with('\'') {
+            return Err(LuxicalError::NpzParse(format!(
+                "Expected quote after 'descr':', got: {}",
+                &rest[..rest.len().min(20)]
+            )));
+        }
+        let rest = &rest[1..];
+
         let quote_end = rest
             .find('\'')
             .ok_or_else(|| LuxicalError::NpzParse("No descr end quote".to_string()))?;
         Ok(rest[..quote_end].to_string())
     }
 
-    fn read_array<T: NpyElement>(&mut self, name: &str) -> Result<Vec<T>> {
+    /// Read raw bytes for an array from the NPZ
+    fn read_raw_array(&mut self, name: &str) -> Result<(Vec<u8>, Vec<usize>, String)> {
         let npy_name = format!("{}.npy", name);
         let mut file = self
             .archive
@@ -341,163 +366,119 @@ impl<R: Read + Seek> NpzReader<R> {
 
         let (shape, dtype, data_start) = Self::read_npy_header(&data)?;
 
-        // Verify dtype matches T
-        T::check_dtype(&dtype)?;
+        // Return just the data portion
+        Ok((data[data_start..].to_vec(), shape, dtype))
+    }
 
-        let n_elements: usize = shape.iter().product();
-        let element_size = std::mem::size_of::<T>();
-        let expected_size = n_elements * element_size;
+    /// Read a u8 array (for tokenizer bytes)
+    fn read_array_u8(&mut self, name: &str) -> Result<Vec<u8>> {
+        let (data, shape, dtype) = self.read_raw_array(name)?;
 
-        if data.len() - data_start < expected_size {
+        if !dtype.contains("u1") && !dtype.contains("uint8") {
             return Err(LuxicalError::NpzParse(format!(
-                "Data too short: {} < {}",
-                data.len() - data_start,
-                expected_size
-            )));
-        }
-
-        let mut result = Vec::with_capacity(n_elements);
-        let mut cursor = Cursor::new(&data[data_start..]);
-        for _ in 0..n_elements {
-            result.push(T::read_le(&mut cursor)?);
-        }
-
-        Ok(result)
-    }
-
-    fn read_array_1d<T: NpyElement + Clone>(&mut self, name: &str) -> Result<Array1<T>> {
-        let vec = self.read_array::<T>(name)?;
-        Ok(Array1::from_vec(vec))
-    }
-
-    fn read_array_2d<T: NpyElement + Clone>(&mut self, name: &str) -> Result<Array2<T>> {
-        let npy_name = format!("{}.npy", name);
-        let mut file = self
-            .archive
-            .by_name(&npy_name)
-            .map_err(|_| LuxicalError::NpzParse(format!("Array '{}' not found", name)))?;
-
-        let mut data = Vec::new();
-        file.read_to_end(&mut data)?;
-
-        let (shape, dtype, data_start) = Self::read_npy_header(&data)?;
-        T::check_dtype(&dtype)?;
-
-        if shape.len() != 2 {
-            return Err(LuxicalError::NpzParse(format!(
-                "Expected 2D array, got {}D",
-                shape.len()
-            )));
-        }
-
-        let (rows, cols) = (shape[0], shape[1]);
-        let n_elements = rows * cols;
-
-        let mut vec = Vec::with_capacity(n_elements);
-        let mut cursor = Cursor::new(&data[data_start..]);
-        for _ in 0..n_elements {
-            vec.push(T::read_le(&mut cursor)?);
-        }
-
-        Ok(Array2::from_shape_vec((rows, cols), vec)
-            .map_err(|e| LuxicalError::NpzParse(e.to_string()))?)
-    }
-
-    fn read_scalar<T: NpyElement>(&mut self, name: &str) -> Result<T> {
-        let vec = self.read_array::<T>(name)?;
-        vec.into_iter()
-            .next()
-            .ok_or_else(|| LuxicalError::NpzParse(format!("Empty array for scalar '{}'", name)))
-    }
-}
-
-use byteorder::{LittleEndian, ReadBytesExt};
-
-trait NpyElement: Sized {
-    fn check_dtype(dtype: &str) -> Result<()>;
-    fn read_le<R: Read>(reader: &mut R) -> Result<Self>;
-}
-
-impl NpyElement for f32 {
-    fn check_dtype(dtype: &str) -> Result<()> {
-        if dtype.contains("f4") || dtype.contains("float32") {
-            Ok(())
-        } else {
-            Err(LuxicalError::NpzParse(format!(
-                "Expected float32, got {}",
-                dtype
-            )))
-        }
-    }
-    fn read_le<R: Read>(reader: &mut R) -> Result<Self> {
-        Ok(reader.read_f32::<LittleEndian>()?)
-    }
-}
-
-impl NpyElement for i64 {
-    fn check_dtype(dtype: &str) -> Result<()> {
-        if dtype.contains("i8") || dtype.contains("int64") {
-            Ok(())
-        } else {
-            Err(LuxicalError::NpzParse(format!(
-                "Expected int64, got {}",
-                dtype
-            )))
-        }
-    }
-    fn read_le<R: Read>(reader: &mut R) -> Result<Self> {
-        Ok(reader.read_i64::<LittleEndian>()?)
-    }
-}
-
-impl NpyElement for u32 {
-    fn check_dtype(dtype: &str) -> Result<()> {
-        if dtype.contains("u4") || dtype.contains("uint32") {
-            Ok(())
-        } else {
-            Err(LuxicalError::NpzParse(format!(
-                "Expected uint32, got {}",
-                dtype
-            )))
-        }
-    }
-    fn read_le<R: Read>(reader: &mut R) -> Result<Self> {
-        Ok(reader.read_u32::<LittleEndian>()?)
-    }
-}
-
-impl NpyElement for u8 {
-    fn check_dtype(dtype: &str) -> Result<()> {
-        if dtype.contains("u1") || dtype.contains("uint8") {
-            Ok(())
-        } else {
-            Err(LuxicalError::NpzParse(format!(
                 "Expected uint8, got {}",
                 dtype
-            )))
+            )));
         }
-    }
-    fn read_le<R: Read>(reader: &mut R) -> Result<Self> {
-        let mut buf = [0u8; 1];
-        reader.read_exact(&mut buf)?;
-        Ok(buf[0])
-    }
-}
 
-impl NpyElement for usize {
-    fn check_dtype(dtype: &str) -> Result<()> {
-        // Accept various integer types for the num_nn_layers scalar
-        if dtype.contains('i') || dtype.contains('u') {
-            Ok(())
-        } else {
-            Err(LuxicalError::NpzParse(format!(
-                "Expected integer, got {}",
-                dtype
-            )))
+        let n_elements: usize = if shape.is_empty() { 1 } else { shape.iter().product() };
+        if data.len() < n_elements {
+            return Err(LuxicalError::NpzParse("Data too short for u8 array".to_string()));
         }
+
+        Ok(data[..n_elements].to_vec())
     }
-    fn read_le<R: Read>(reader: &mut R) -> Result<Self> {
-        // Assume it's stored as i64 in the file
-        Ok(reader.read_i64::<LittleEndian>()? as usize)
+
+    /// Read a f32 array - FAST bulk read
+    fn read_array_f32(&mut self, name: &str) -> Result<(Vec<f32>, Vec<usize>)> {
+        let (data, shape, dtype) = self.read_raw_array(name)?;
+
+        if !dtype.contains("f4") && !dtype.contains("float32") {
+            return Err(LuxicalError::NpzParse(format!(
+                "Expected float32, got {}",
+                dtype
+            )));
+        }
+
+        let n_elements: usize = if shape.is_empty() { 1 } else { shape.iter().product() };
+        let expected_bytes = n_elements * 4;
+
+        if data.len() < expected_bytes {
+            return Err(LuxicalError::NpzParse(format!(
+                "Data too short: {} < {}",
+                data.len(),
+                expected_bytes
+            )));
+        }
+
+        // Zero-copy cast (requires data alignment, which NPY provides)
+        let floats: &[f32] = cast_slice(&data[..expected_bytes]);
+        Ok((floats.to_vec(), shape))
+    }
+
+    /// Read an i64 array - FAST bulk read
+    fn read_array_i64(&mut self, name: &str) -> Result<(Vec<i64>, Vec<usize>)> {
+        let (data, shape, dtype) = self.read_raw_array(name)?;
+
+        if !dtype.contains("i8") && !dtype.contains("int64") {
+            return Err(LuxicalError::NpzParse(format!(
+                "Expected int64, got {}",
+                dtype
+            )));
+        }
+
+        let n_elements: usize = if shape.is_empty() { 1 } else { shape.iter().product() };
+        let expected_bytes = n_elements * 8;
+
+        if data.len() < expected_bytes {
+            return Err(LuxicalError::NpzParse(format!(
+                "Data too short: {} < {}",
+                data.len(),
+                expected_bytes
+            )));
+        }
+
+        // FAST: reinterpret bytes as i64
+        let result: Vec<i64> = data[..expected_bytes]
+            .chunks_exact(8)
+            .map(|chunk| {
+                i64::from_le_bytes([
+                    chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],
+                ])
+            })
+            .collect();
+
+        Ok((result, shape))
+    }
+
+    /// Read a u32 array - FAST bulk read
+    fn read_array_u32(&mut self, name: &str) -> Result<(Vec<u32>, Vec<usize>)> {
+        let (data, shape, dtype) = self.read_raw_array(name)?;
+
+        if !dtype.contains("u4") && !dtype.contains("uint32") {
+            return Err(LuxicalError::NpzParse(format!(
+                "Expected uint32, got {}",
+                dtype
+            )));
+        }
+
+        let n_elements: usize = if shape.is_empty() { 1 } else { shape.iter().product() };
+        let expected_bytes = n_elements * 4;
+
+        if data.len() < expected_bytes {
+            return Err(LuxicalError::NpzParse(format!(
+                "Data too short: {} < {}",
+                data.len(),
+                expected_bytes
+            )));
+        }
+
+        // FAST: reinterpret bytes as u32
+        let result: Vec<u32> = data[..expected_bytes]
+            .chunks_exact(4)
+            .map(|chunk| u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+            .collect();
+
+        Ok((result, shape))
     }
 }
