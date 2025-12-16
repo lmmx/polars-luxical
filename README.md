@@ -15,47 +15,6 @@ Luxical models achieve dramatically higher throughput than transformer-based emb
 It should be noted that they were not trained on queries, so you cannot use them for search!
 A demonstration of this is given in the benchmarks, where the results are fast but not useful.
 
-### Similar Document (Half) Retrieval
-
-> Since text chunks from the same document are generally semantically much more similar to one another than they are to other random text chunks...
-> we expect a well-trained embedding model to embed the majority of document halves within the top 1% or so of nearest vectors to their match’s embedding vector.
-
-The example given by Datology is matching document halves, which you can see we get over 97% on:
-
-- Running `doc_half_match_demo.py` from the benchmark subdir:
-
-```
-Loaded 708 PEPs                                                                                                               
-Loading model from cache (safetensors): "/home/louis/.cache/polars-luxical/model.safetensors"
-Embedded all document halves.                                                                                                 
-                               
-Half-document retrieval results on 708 PEPs:                                                                                  
-Top-1: 690 (97.46%)                                            
-Top-5: 707 (99.86%)                                            
-Top-1%: 707 (99.86%)                                                                                                          
-Mean rank of correct half: 1.05                                                                                               
-                                                                                                                              
-Cases where the correct second half was NOT ranked 1:                                                                         
-shape: (18, 5)                                                                                                                
-┌──────┬─────────────────────────────────┬─────────────────────────────────┬─────────────────────────────────┬──────┐
-│ pep  ┆ first_half                      ┆ true_second_half                ┆ top_retrieved_second_half       ┆ rank │
-│ ---  ┆ ---                             ┆ ---                             ┆ ---                             ┆ ---  │
-│ i64  ┆ str                             ┆ str                             ┆ str                             ┆ i64  │
-╞══════╪═════════════════════════════════╪═════════════════════════════════╪═════════════════════════════════╪══════╡
-│ 222  ┆ PEP: 222 Title: Web Library En… ┆ to be standard at all, and the… ┆ code that is not up to the new… ┆ 5    │
-│ 241  ┆ PEP: 241 Title: Metadata for P… ┆ (optional) -------------------… ┆ must be "../package-0.45.tgz".… ┆ 2    │
-│ 336  ┆ PEP: 336 Title: Make None Call… ┆ semantics would be effectively… ┆ ``in`` keyword was chosen as a… ┆ 2    │
-│ 361  ┆ PEP: 361 Title: Python 2.6 and… ┆ site-packages directory - :pep… ┆ 2020, but the final release oc… ┆ 2    │
-│ 398  ┆ PEP: 398 Title: Python 3.3 Rel… ┆ maintenance release before 3.3… ┆ new features beyond this point… ┆ 2    │
-│ …    ┆ …                               ┆ …                               ┆ …                               ┆ …    │
-│ 3104 ┆ PEP: 3104 Title: Access to Nam… ┆ This proposal yields a simple … ┆ fact(n): ... if n == 1: ... re… ┆ 2    │
-│ 3134 ┆ PEP: 3134 Title: Exception Cha… ┆ open') from exc If the call to… ┆ __init__(self, filename): try:… ┆ 2    │
-│ 8102 ┆ PEP: 8102 Title: 2021 Term Ste… ┆ Roll`_ may participate. Ballot… ┆ not open to the public, only t… ┆ 3    │
-│ 8106 ┆ PEP: 8106 Title: 2025 Term Ste… ┆ and ``- (approval)`` answers. … ┆ only those on the `Voter Roll`… ┆ 3    │
-│ 8107 ┆ PEP: 8107 Title: 2026 Term Ste… ┆ Enter voter data using Email l… ┆ only those on the `Voter Roll`… ┆ 2    │
-└──────┴─────────────────────────────────┴─────────────────────────────────┴─────────────────────────────────┴──────┘
-```
-
 ## Installation
 ```bash
 pip install polars-luxical
@@ -121,6 +80,47 @@ results = df_emb.luxical.retrieve(
     k=3,
 )
 print(results)
+```
+
+### Similar Document (Half) Retrieval
+
+> Since text chunks from the same document are generally semantically much more similar to one another than they are to other random text chunks...
+> we expect a well-trained embedding model to embed the majority of document halves within the top 1% or so of nearest vectors to their match’s embedding vector.
+
+The example given by Datology is matching document halves, which you can see we get over 97% on:
+
+- Running `doc_half_match_demo.py` from the benchmark subdir:
+
+```
+Loaded 708 PEPs
+Loading model from cache (safetensors): "/home/louis/.cache/polars-luxical/model.safetensors"
+Embedded all document halves.
+
+Half-document retrieval results on 708 PEPs:
+Top-1: 690 (97.46%)
+Top-5: 707 (99.86%)
+Top-1%: 707 (99.86%)
+Mean rank of correct half: 1.05
+
+Cases where the correct second half was NOT ranked 1:
+shape: (18, 6)
+┌──────┬─────────────────────────────────┬─────────────────────────────────┬─────────────────────────────────┬───────────────────┬──────┐
+│ pep  ┆ first_half                      ┆ true_second_half                ┆ top_retrieved_second_half       ┆ top_retrieved_pep ┆ rank │
+│ ---  ┆ ---                             ┆ ---                             ┆ ---                             ┆ ---               ┆ ---  │
+│ i64  ┆ str                             ┆ str                             ┆ str                             ┆ i64               ┆ i64  │
+╞══════╪═════════════════════════════════╪═════════════════════════════════╪═════════════════════════════════╪═══════════════════╪══════╡
+│ 222  ┆ PEP: 222 Title: Web Library En… ┆ to be standard at all, and the… ┆ code that is not up to the new… ┆ 3001              ┆ 5    │
+│ 241  ┆ PEP: 241 Title: Metadata for P… ┆ (optional) -------------------… ┆ must be "../package-0.45.tgz".… ┆ 314               ┆ 2    │
+│ 336  ┆ PEP: 336 Title: Make None Call… ┆ semantics would be effectively… ┆ ``in`` keyword was chosen as a… ┆ 403               ┆ 2    │
+│ 361  ┆ PEP: 361 Title: Python 2.6 and… ┆ site-packages directory - :pep… ┆ 2020, but the final release oc… ┆ 373               ┆ 2    │
+│ 398  ┆ PEP: 398 Title: Python 3.3 Rel… ┆ maintenance release before 3.3… ┆ new features beyond this point… ┆ 392               ┆ 2    │
+│ …    ┆ …                               ┆ …                               ┆ …                               ┆ …                 ┆ …    │
+│ 3104 ┆ PEP: 3104 Title: Access to Nam… ┆ This proposal yields a simple … ┆ fact(n): ... if n == 1: ... re… ┆ 227               ┆ 2    │
+│ 3134 ┆ PEP: 3134 Title: Exception Cha… ┆ open') from exc If the call to… ┆ __init__(self, filename): try:… ┆ 344               ┆ 2    │
+│ 8102 ┆ PEP: 8102 Title: 2021 Term Ste… ┆ Roll`_ may participate. Ballot… ┆ not open to the public, only t… ┆ 8103              ┆ 3    │
+│ 8106 ┆ PEP: 8106 Title: 2025 Term Ste… ┆ and ``- (approval)`` answers. … ┆ only those on the `Voter Roll`… ┆ 8105              ┆ 3    │
+│ 8107 ┆ PEP: 8107 Title: 2026 Term Ste… ┆ Enter voter data using Email l… ┆ only those on the `Voter Roll`… ┆ 8105              ┆ 2    │
+└──────┴─────────────────────────────────┴─────────────────────────────────┴─────────────────────────────────┴───────────────────┴──────┘
 ```
 
 ## Available Models

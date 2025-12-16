@@ -64,6 +64,9 @@ def main():
         )
 
         retrieved_texts = retrieved.select("second_half").to_series().to_list()
+        retrieved_peps = (
+            retrieved.select("pep").to_series().to_list()
+        )  # IDs of retrieved PEPs
         rank = retrieved_texts.index(second_half_text) + 1  # 1-based
         ranks.append(rank)
 
@@ -74,6 +77,9 @@ def main():
                     "first_half": first_half_text,
                     "true_second_half": second_half_text,
                     "top_retrieved_second_half": retrieved_texts[0],
+                    "top_retrieved_pep": retrieved_peps[
+                        0
+                    ],  # ID of incorrectly top-ranked PEP
                     "rank": rank,
                 },
             )
