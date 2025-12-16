@@ -18,7 +18,7 @@ description = "A Polars plugin for fast lexical text embeddings"
 readme = "README.md"
 license = {text = "Apache-2.0"}
 authors = [
-  {name = "Your Name", email = "you@example.com"}
+  {name = "Louis Maddox", email = "louismmx@gmail.com"}
 ]
 requires-python = ">=3.11"
 classifiers = [
