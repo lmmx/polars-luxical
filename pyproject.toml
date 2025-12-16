@@ -1,0 +1,47 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0", "patchelf>=0.17.2.4; sys_platform == 'linux'", "polars>=1.36.0"]
+build-backend = "maturin"
+
+[dependency-groups]
+dev = [
+  "maturin>=1.10.2"
+]
+test = [
+  "pytest>=9.0.2"
+]
+
+[project]
+name = "polars_luxical"
+version = "0.1.0"
+description = "A Polars plugin for fast lexical text embeddings"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+authors = [
+  {name = "Your Name", email = "you@example.com"}
+]
+requires-python = ">=3.11"
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: MacOS",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Rust",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13"
+]
+dependencies = [
+  "polars>=1.36.0",
+  "polars-distance>=0.5.3"
+]
+
+[tool.maturin]
+module-name = "polars_luxical._polars_luxical"
+python-source = "python"
+release = true
+strip = true
+
+[tool.uv]
+default-groups = ["test"]

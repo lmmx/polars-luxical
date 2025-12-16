@@ -1,0 +1,36 @@
+[dependencies]
+pyo3 = {version = "0.23.4", features = ["extension-module", "abi3-py38"]}
+polars = {version = "0.46.0", default-features = false, features = ["dtype-array"]}
+polars-arrow = {version = "0.46.0", default-features = false}
+pyo3-polars = {version = "0.20.0", features = ["derive"]}
+serde = {version = "1.0", features = ["derive"]}
+once_cell = "1.20"
+rayon = "1.10"
+tokenizers = {version = "0.21", default-features = false, features = ["onig"]}
+ndarray = "0.16"
+sprs = "0.11"
+byteorder = "1.5"
+thiserror = "2.0"
+zip = "2.2"
+dirs = "5.0"
+ureq = "2.10"
+
+[lib]
+name = "_polars_luxical"
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[package]
+name = "polars_luxical"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "A Polars plugin for fast lexical embeddings using Luxical"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+debug = false
+strip = "symbols"

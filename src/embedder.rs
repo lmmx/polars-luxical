@@ -1,0 +1,503 @@
+//! Core Luxical embedder implementation in pure Rust.
+
+use std::collections::HashMap;
+use std::fs::File;
+use std::io::{BufReader, Read};
+use std::path::Path;
+
+use ndarray::{Array1, Array2, Axis};
+use sprs::{CsMat, TriMat};
+use thiserror::Error;
+use tokenizers::Tokenizer;
+
+use crate::ngrams::extract_ngrams_hashed;
+use crate::tfidf::apply_tfidf_and_normalize;
+
+#[derive(Error, Debug)]
+pub enum LuxicalError {
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("NPZ parse error: {0}")]
+    NpzParse(String),
+    #[error("Tokenizer error: {0}")]
+    Tokenizer(String),
+    #[error("Model not found: {0}")]
+    ModelNotFound(String),
+}
+
+pub type Result<T> = std::result::Result<T, LuxicalError>;
+
+/// A loaded Luxical embedding model.
+pub struct LuxicalEmbedder {
+    /// The tokenizer (from HuggingFace tokenizers)
+    tokenizer: Tokenizer,
+    /// Maximum n-gram length to extract
+    max_ngram_length: usize,
+    /// Map from n-gram hash to vocabulary index
+    ngram_hash_to_idx: HashMap<i64, u32>,
+    /// IDF values for each vocabulary term
+    idf_values: Array1<f32>,
+    /// Neural network layers (each is output_dim x input_dim)
+    layers: Vec<Array2<f32>>,
+    /// Output embedding dimension
+    output_dim: usize,
+}
+
+impl LuxicalEmbedder {
+    /// Load a Luxical model from an NPZ file path.
+    pub fn load<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let path = path.as_ref();
+        let file = File::open(path)?;
+        let reader = BufReader::new(file);
+        Self::load_from_reader(reader)
+    }
+
+    /// Load from a reader (for flexibility with different sources).
+    fn load_from_reader<R: Read + std::io::Seek>(reader: R) -> Result<Self> {
+        let mut npz = NpzReader::new(reader)?;
+
+        // Load tokenizer from JSON bytes
+        let tokenizer_bytes: Vec<u8> = npz.read_array("tokenizer")?;
+        let tokenizer_json = String::from_utf8(tokenizer_bytes)
+            .map_err(|e| LuxicalError::NpzParse(format!("Invalid UTF-8 in tokenizer: {}", e)))?;
+        let tokenizer = Tokenizer::from_bytes(tokenizer_json.as_bytes())
+            .map_err(|e| LuxicalError::Tokenizer(e.to_string()))?;
+
+        // Load recognized ngrams to determine max_ngram_length
+        let recognized_ngrams: Array2<i64> = npz.read_array_2d("recognized_ngrams")?;
+        let max_ngram_length = recognized_ngrams.ncols();
+
+        // Build ngram hash to index map
+        let ngram_hash_to_idx_keys: Array1<i64> =
+            npz.read_array_1d("ngram_hash_to_ngram_idx_keys")?;
+        let ngram_hash_to_idx_values: Array1<u32> =
+            npz.read_array_1d("ngram_hash_to_ngram_idx_values")?;
+
+        let mut ngram_hash_to_idx = HashMap::with_capacity(ngram_hash_to_idx_keys.len());
+        for (k, v) in ngram_hash_to_idx_keys
+            .iter()
+            .zip(ngram_hash_to_idx_values.iter())
+        {
+            ngram_hash_to_idx.insert(*k, *v);
+        }
+
+        // Load IDF values
+        let idf_values: Array1<f32> = npz.read_array_1d("idf_values")?;
+
+        // Load neural network layers
+        let num_layers: usize = npz.read_scalar("num_nn_layers")?;
+        let mut layers = Vec::with_capacity(num_layers);
+        for i in 0..num_layers {
+            let layer: Array2<f32> = npz.read_array_2d(&format!("nn_layer_{}", i))?;
+            layers.push(layer);
+        }
+
+        let output_dim = layers.last().map(|l| l.nrows()).unwrap_or(0);
+
+        Ok(Self {
+            tokenizer,
+            max_ngram_length,
+            ngram_hash_to_idx,
+            idf_values,
+            layers,
+            output_dim,
+        })
+    }
+
+    /// Get the output embedding dimension.
+    pub fn output_dim(&self) -> usize {
+        self.output_dim
+    }
+
+    /// Get the vocabulary size.
+    pub fn vocab_size(&self) -> usize {
+        self.ngram_hash_to_idx.len()
+    }
+
+    /// Embed a batch of texts, returning a 2D array of shape (n_texts, output_dim).
+    pub fn embed_batch(&self, texts: &[&str]) -> Result<Array2<f32>> {
+        if texts.is_empty() {
+            return Ok(Array2::zeros((0, self.output_dim)));
+        }
+
+        // 1. Tokenize all texts
+        let token_ids: Vec<Vec<u32>> = texts
+            .iter()
+            .map(|text| {
+                let encoding = self
+                    .tokenizer
+                    .encode(*text, false)
+                    .map_err(|e| LuxicalError::Tokenizer(e.to_string()))?;
+                Ok(encoding.get_ids().to_vec())
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        // 2. Build sparse BoW matrix with n-gram hashing
+        let bow = self.build_bow_matrix(&token_ids);
+
+        // 3. Apply TF-IDF weighting
+        let tfidf = apply_tfidf_and_normalize(&bow, self.idf_values.view());
+
+        // 4. Forward pass through MLP
+        let embeddings = self.forward(&tfidf)?;
+
+        Ok(embeddings)
+    }
+
+    /// Build a sparse BoW (bag-of-words) matrix from tokenized documents.
+    fn build_bow_matrix(&self, token_ids: &[Vec<u32>]) -> CsMat<f32> {
+        let n_docs = token_ids.len();
+        let vocab_size = self.vocab_size();
+
+        // Use a triplet matrix for efficient construction
+        let mut triplets = TriMat::new((n_docs, vocab_size));
+
+        for (doc_idx, tokens) in token_ids.iter().enumerate() {
+            // Count n-grams for this document
+            let mut counts: HashMap<u32, u32> = HashMap::new();
+
+            for ngram_hash in extract_ngrams_hashed(tokens, self.max_ngram_length) {
+                if let Some(&vocab_idx) = self.ngram_hash_to_idx.get(&ngram_hash) {
+                    *counts.entry(vocab_idx).or_insert(0) += 1;
+                }
+            }
+
+            // Add to triplet matrix
+            for (vocab_idx, count) in counts {
+                triplets.add_triplet(doc_idx, vocab_idx as usize, count as f32);
+            }
+        }
+
+        triplets.to_csr()
+    }
+
+    /// Forward pass through the MLP layers.
+    fn forward(&self, tfidf: &CsMat<f32>) -> Result<Array2<f32>> {
+        if self.layers.is_empty() {
+            return Err(LuxicalError::NpzParse("No layers in model".to_string()));
+        }
+
+        // First layer: sparse @ dense.T
+        let mut hidden = sparse_dense_matmul(tfidf, &self.layers[0]);
+        relu_inplace(&mut hidden);
+        normalize_rows_inplace(&mut hidden);
+
+        // Hidden layers
+        for layer in &self.layers[1..self.layers.len() - 1] {
+            hidden = dense_matmul(&hidden, layer);
+            relu_inplace(&mut hidden);
+            normalize_rows_inplace(&mut hidden);
+        }
+
+        // Final layer (no ReLU)
+        if self.layers.len() > 1 {
+            hidden = dense_matmul(&hidden, self.layers.last().unwrap());
+            normalize_rows_inplace(&mut hidden);
+        }
+
+        Ok(hidden)
+    }
+}
+
+/// Sparse matrix (CSR) times dense matrix (stored as output_dim x input_dim).
+/// Returns dense matrix of shape (n_rows, output_dim).
+fn sparse_dense_matmul(sparse: &CsMat<f32>, dense: &Array2<f32>) -> Array2<f32> {
+    let n_rows = sparse.rows();
+    let output_dim = dense.nrows();
+
+    let mut result = Array2::zeros((n_rows, output_dim));
+
+    // For each row in the sparse matrix
+    for (row_idx, row_vec) in sparse.outer_iterator().enumerate() {
+        // For each non-zero element in this row
+        for (col_idx, &val) in row_vec.iter() {
+            // Add val * dense[col_idx, :] to result[row_idx, :]
+            let dense_col = dense.column(col_idx);
+            for (out_idx, &dense_val) in dense_col.iter().enumerate() {
+                result[[row_idx, out_idx]] += val * dense_val;
+            }
+        }
+    }
+
+    result
+}
+
+/// Dense matrix multiplication: A @ B.T where B is stored as (output_dim, input_dim).
+fn dense_matmul(a: &Array2<f32>, b: &Array2<f32>) -> Array2<f32> {
+    a.dot(&b.t())
+}
+
+/// Apply ReLU in-place.
+fn relu_inplace(arr: &mut Array2<f32>) {
+    arr.mapv_inplace(|x| x.max(0.0));
+}
+
+/// L2 normalize each row in-place.
+fn normalize_rows_inplace(arr: &mut Array2<f32>) {
+    for mut row in arr.axis_iter_mut(Axis(0)) {
+        let norm: f32 = row.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm > 0.0 {
+            row.mapv_inplace(|x| x / norm);
+        }
+    }
+}
+
+// ============================================================================
+// NPZ Reader - minimal implementation for loading Luxical model files
+// ============================================================================
+
+use std::io::{Cursor, Seek};
+
+struct NpzReader<R: Read + Seek> {
+    archive: zip::ZipArchive<R>,
+}
+
+impl<R: Read + Seek> NpzReader<R> {
+    fn new(reader: R) -> Result<Self> {
+        let archive =
+            zip::ZipArchive::new(reader).map_err(|e| LuxicalError::NpzParse(e.to_string()))?;
+        Ok(Self { archive })
+    }
+
+    fn read_npy_header(data: &[u8]) -> Result<(Vec<usize>, String, usize)> {
+        // NPY format: magic + version + header_len + header
+        if data.len() < 10 || &data[0..6] != b"\x93NUMPY" {
+            return Err(LuxicalError::NpzParse("Invalid NPY magic".to_string()));
+        }
+
+        let version_major = data[6];
+        let header_len = if version_major == 1 {
+            u16::from_le_bytes([data[8], data[9]]) as usize
+        } else {
+            u32::from_le_bytes([data[8], data[9], data[10], data[11]]) as usize
+        };
+
+        let header_start = if version_major == 1 { 10 } else { 12 };
+        let header_end = header_start + header_len;
+        let header_str = std::str::from_utf8(&data[header_start..header_end])
+            .map_err(|e| LuxicalError::NpzParse(format!("Invalid header UTF-8: {}", e)))?;
+
+        // Parse the header dict (simplified - assumes specific format)
+        let shape = Self::parse_shape(header_str)?;
+        let dtype = Self::parse_dtype(header_str)?;
+
+        Ok((shape, dtype, header_end))
+    }
+
+    fn parse_shape(header: &str) -> Result<Vec<usize>> {
+        // Find 'shape': (...)
+        let shape_start = header
+            .find("'shape':")
+            .ok_or_else(|| LuxicalError::NpzParse("No shape in header".to_string()))?;
+        let rest = &header[shape_start..];
+        let paren_start = rest
+            .find('(')
+            .ok_or_else(|| LuxicalError::NpzParse("No shape tuple".to_string()))?;
+        let paren_end = rest
+            .find(')')
+            .ok_or_else(|| LuxicalError::NpzParse("No shape tuple end".to_string()))?;
+        let shape_str = &rest[paren_start + 1..paren_end];
+
+        let shape: Vec<usize> = shape_str
+            .split(',')
+            .filter_map(|s| {
+                let s = s.trim();
+                if s.is_empty() {
+                    None
+                } else {
+                    s.parse().ok()
+                }
+            })
+            .collect();
+
+        Ok(shape)
+    }
+
+    fn parse_dtype(header: &str) -> Result<String> {
+        // Find 'descr': '...'
+        let descr_start = header
+            .find("'descr':")
+            .ok_or_else(|| LuxicalError::NpzParse("No descr in header".to_string()))?;
+        let rest = &header[descr_start..];
+        let quote_start = rest
+            .find('\'')
+            .ok_or_else(|| LuxicalError::NpzParse("No descr quote".to_string()))?;
+        let rest = &rest[quote_start + 1..];
+        let quote_end = rest
+            .find('\'')
+            .ok_or_else(|| LuxicalError::NpzParse("No descr end quote".to_string()))?;
+        Ok(rest[..quote_end].to_string())
+    }
+
+    fn read_array<T: NpyElement>(&mut self, name: &str) -> Result<Vec<T>> {
+        let npy_name = format!("{}.npy", name);
+        let mut file = self
+            .archive
+            .by_name(&npy_name)
+            .map_err(|_| LuxicalError::NpzParse(format!("Array '{}' not found", name)))?;
+
+        let mut data = Vec::new();
+        file.read_to_end(&mut data)?;
+
+        let (shape, dtype, data_start) = Self::read_npy_header(&data)?;
+
+        // Verify dtype matches T
+        T::check_dtype(&dtype)?;
+
+        let n_elements: usize = shape.iter().product();
+        let element_size = std::mem::size_of::<T>();
+        let expected_size = n_elements * element_size;
+
+        if data.len() - data_start < expected_size {
+            return Err(LuxicalError::NpzParse(format!(
+                "Data too short: {} < {}",
+                data.len() - data_start,
+                expected_size
+            )));
+        }
+
+        let mut result = Vec::with_capacity(n_elements);
+        let mut cursor = Cursor::new(&data[data_start..]);
+        for _ in 0..n_elements {
+            result.push(T::read_le(&mut cursor)?);
+        }
+
+        Ok(result)
+    }
+
+    fn read_array_1d<T: NpyElement + Clone>(&mut self, name: &str) -> Result<Array1<T>> {
+        let vec = self.read_array::<T>(name)?;
+        Ok(Array1::from_vec(vec))
+    }
+
+    fn read_array_2d<T: NpyElement + Clone>(&mut self, name: &str) -> Result<Array2<T>> {
+        let npy_name = format!("{}.npy", name);
+        let mut file = self
+            .archive
+            .by_name(&npy_name)
+            .map_err(|_| LuxicalError::NpzParse(format!("Array '{}' not found", name)))?;
+
+        let mut data = Vec::new();
+        file.read_to_end(&mut data)?;
+
+        let (shape, dtype, data_start) = Self::read_npy_header(&data)?;
+        T::check_dtype(&dtype)?;
+
+        if shape.len() != 2 {
+            return Err(LuxicalError::NpzParse(format!(
+                "Expected 2D array, got {}D",
+                shape.len()
+            )));
+        }
+
+        let (rows, cols) = (shape[0], shape[1]);
+        let n_elements = rows * cols;
+
+        let mut vec = Vec::with_capacity(n_elements);
+        let mut cursor = Cursor::new(&data[data_start..]);
+        for _ in 0..n_elements {
+            vec.push(T::read_le(&mut cursor)?);
+        }
+
+        Ok(Array2::from_shape_vec((rows, cols), vec)
+            .map_err(|e| LuxicalError::NpzParse(e.to_string()))?)
+    }
+
+    fn read_scalar<T: NpyElement>(&mut self, name: &str) -> Result<T> {
+        let vec = self.read_array::<T>(name)?;
+        vec.into_iter()
+            .next()
+            .ok_or_else(|| LuxicalError::NpzParse(format!("Empty array for scalar '{}'", name)))
+    }
+}
+
+use byteorder::{LittleEndian, ReadBytesExt};
+
+trait NpyElement: Sized {
+    fn check_dtype(dtype: &str) -> Result<()>;
+    fn read_le<R: Read>(reader: &mut R) -> Result<Self>;
+}
+
+impl NpyElement for f32 {
+    fn check_dtype(dtype: &str) -> Result<()> {
+        if dtype.contains("f4") || dtype.contains("float32") {
+            Ok(())
+        } else {
+            Err(LuxicalError::NpzParse(format!(
+                "Expected float32, got {}",
+                dtype
+            )))
+        }
+    }
+    fn read_le<R: Read>(reader: &mut R) -> Result<Self> {
+        Ok(reader.read_f32::<LittleEndian>()?)
+    }
+}
+
+impl NpyElement for i64 {
+    fn check_dtype(dtype: &str) -> Result<()> {
+        if dtype.contains("i8") || dtype.contains("int64") {
+            Ok(())
+        } else {
+            Err(LuxicalError::NpzParse(format!(
+                "Expected int64, got {}",
+                dtype
+            )))
+        }
+    }
+    fn read_le<R: Read>(reader: &mut R) -> Result<Self> {
+        Ok(reader.read_i64::<LittleEndian>()?)
+    }
+}
+
+impl NpyElement for u32 {
+    fn check_dtype(dtype: &str) -> Result<()> {
+        if dtype.contains("u4") || dtype.contains("uint32") {
+            Ok(())
+        } else {
+            Err(LuxicalError::NpzParse(format!(
+                "Expected uint32, got {}",
+                dtype
+            )))
+        }
+    }
+    fn read_le<R: Read>(reader: &mut R) -> Result<Self> {
+        Ok(reader.read_u32::<LittleEndian>()?)
+    }
+}
+
+impl NpyElement for u8 {
+    fn check_dtype(dtype: &str) -> Result<()> {
+        if dtype.contains("u1") || dtype.contains("uint8") {
+            Ok(())
+        } else {
+            Err(LuxicalError::NpzParse(format!(
+                "Expected uint8, got {}",
+                dtype
+            )))
+        }
+    }
+    fn read_le<R: Read>(reader: &mut R) -> Result<Self> {
+        let mut buf = [0u8; 1];
+        reader.read_exact(&mut buf)?;
+        Ok(buf[0])
+    }
+}
+
+impl NpyElement for usize {
+    fn check_dtype(dtype: &str) -> Result<()> {
+        // Accept various integer types for the num_nn_layers scalar
+        if dtype.contains('i') || dtype.contains('u') {
+            Ok(())
+        } else {
+            Err(LuxicalError::NpzParse(format!(
+                "Expected integer, got {}",
+                dtype
+            )))
+        }
+    }
+    fn read_le<R: Read>(reader: &mut R) -> Result<Self> {
+        // Assume it's stored as i64 in the file
+        Ok(reader.read_i64::<LittleEndian>()? as usize)
+    }
+}
