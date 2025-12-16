@@ -13,7 +13,7 @@ thiserror = "2"
 zip = "6"
 dirs = "6"
 ureq = "3"
-bytemuck = { version = "1.24", features = ["derive"] }
+bytemuck = {version = "1.24", features = ["derive"]}
 safetensors = "0.7"
 memmap2 = "0.9"
 

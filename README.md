@@ -7,7 +7,7 @@ A high-performance Polars plugin for Luxical text embeddings, implemented in Rus
 This plugin provides [Luxical](https://github.com/datologyai/luxical) embeddings directly within Polars expressions. Luxical combines:
 
 - Subword tokenization (BERT uncased)
-- N-gram feature extraction with TF-IDF weighting  
+- N-gram feature extraction with TF-IDF weighting
 - Sparse-to-dense neural network projection via knowledge distillation
 
 Luxical models achieve dramatically higher throughput than transformer-based embedding models while maintaining competitive quality for document-level similarity tasks like clustering, classification, and semantic deduplication.

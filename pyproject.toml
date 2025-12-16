@@ -5,7 +5,7 @@ build-backend = "maturin"
 [dependency-groups]
 dev = [
   "maturin>=1.10.2",
-  "patchelf>=0.17.2.4",
+  "patchelf>=0.17.2.4"
 ]
 test = [
   "pytest>=9.0.2"
