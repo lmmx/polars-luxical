@@ -1,7 +1,23 @@
 [working-directory: '.']
 _min_version:
     #!/usr/bin/env -S bash -euo pipefail
-    uvx --from=toml-cli toml get --toml-path=pyproject.toml project.requires-python | sed 's/>=//;s/"//g'
+    uvx --from=toml-cli toml get --toml-path=pyproject.toml project.requires-python \
+    | jq -Rr '
+        split(",")
+        | map(select(startswith(">=")))
+        | .[0]
+        | ltrimstr(">=")
+      '
+
+_max_version:
+    #!/usr/bin/env -S bash -euo pipefail
+    uvx --from=toml-cli toml get --toml-path=pyproject.toml project.requires-python \
+    | jq -Rr '
+        split(",")
+        | map(select(startswith("<")))
+        | .[0]
+        | ltrimstr("<")
+      '
 
 _avail_pythons:
     uv python list --all-versions --output-format json
@@ -9,21 +25,24 @@ _avail_pythons:
 _avail_cpythons:
     #!/usr/bin/env -S bash -euo pipefail
     MIN_VERSION=$(just _min_version)
-    # numpy doesn't build on 3.15 yet
-    MAX_VERSION="3.14"
-    just _avail_pythons | jq -c --arg min "$MIN_VERSION" --arg max "$MAX_VERSION" '
+    MAX_VERSION=$(just _max_version)
+
+    just _avail_pythons | jq -c \
+      --arg min "$MIN_VERSION" \
+      --arg max "$MAX_VERSION" '
       ($min | split(".") | {major: .[0]|tonumber, minor: .[1]|tonumber}) as $minv |
       ($max | split(".") | {major: .[0]|tonumber, minor: .[1]|tonumber}) as $maxv |
-      [.[] | {v:.version_parts, t:.variant, impl:.implementation, full:.version}]
+      [.[] | {v:.version_parts, t:.variant, impl:.implementation}]
       | unique_by([.v.minor,.t])
       | map(select(
-         (.impl == "cpython") and
-         (.v.major == 3) and
-         (.v.minor >= $minv.minor) and
-         (.v.minor <= $maxv.minor)
+          (.impl == "cpython") and
+          (.v.major == 3) and
+          (.v.minor >= $minv.minor) and
+          (.v.minor <  $maxv.minor)
         ))
       | map(select(.t != "freethreaded"))
-      | map("\(.v.major).\(.v.minor)")'
+      | map("\(.v.major).\(.v.minor)")
+      '
 
 # PyPy disabled - builds never finish
 _avail_pypys_DISABLED:
