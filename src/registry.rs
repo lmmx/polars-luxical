@@ -20,10 +20,11 @@ const DEFAULT_MODEL_ID: &str = "DatologyAI/luxical-one";
 fn get_model_info(model_id: &str) -> Option<ModelInfo> {
     match model_id.to_lowercase().as_str() {
         "datologyai/luxical-one" | "luxical-one" => Some(ModelInfo {
+            // Updated paths to include artifacts/luxical-one subdirectory
+            safetensors_url: "https://huggingface.co/DatologyAI/luxical-one/resolve/main/artifacts/luxical-one/model.safetensors",
+            safetensors_filename: "model.safetensors",
             npz_url: "https://huggingface.co/DatologyAI/luxical-one/resolve/main/luxical_one_rc4.npz",
             npz_filename: "luxical_one_rc4.npz",
-            safetensors_url: "https://huggingface.co/DatologyAI/luxical-one/resolve/main/model.safetensors",
-            safetensors_filename: "model.safetensors",
         }),
         _ => None,
     }
@@ -133,7 +134,7 @@ fn load_model_impl(model_name: &str) -> Result<LuxicalEmbedder, LuxicalError> {
 
     let cache = cache_dir();
 
-    // Prefer safetensors (faster loading)
+    // Prefer safetensors (faster loading via mmap)
     let safetensors_path = cache.join(info.safetensors_filename);
     if safetensors_path.exists() {
         eprintln!("Loading model from cache (safetensors): {:?}", safetensors_path);
@@ -147,9 +148,16 @@ fn load_model_impl(model_name: &str) -> Result<LuxicalEmbedder, LuxicalError> {
         return LuxicalEmbedder::load(&npz_path);
     }
 
-    // Download - try safetensors first
-    if let Ok(()) = download_from_url(info.safetensors_url, &safetensors_path) {
-        return LuxicalEmbedder::load(&safetensors_path);
+    // Download - try safetensors first (preferred format)
+    eprintln!("Attempting to download safetensors format...");
+    match download_from_url(info.safetensors_url, &safetensors_path) {
+        Ok(()) => {
+            return LuxicalEmbedder::load(&safetensors_path);
+        }
+        Err(e) => {
+            eprintln!("Safetensors download failed: {}", e);
+            eprintln!("Falling back to NPZ format...");
+        }
     }
 
     // Fall back to NPZ download
@@ -168,8 +176,15 @@ fn download_from_url(url: &str, dest_path: &PathBuf) -> Result<(), LuxicalError>
         LuxicalError::ModelNotFound(format!("Failed to download from {}: {}", url, e))
     })?;
 
+    // ureq v3: get the body, then call into_reader() to get something that implements Read
+    let (_, body) = response.into_parts();
+    let mut reader = body
+        .into_with_config()
+        .limit(1024 * 1024 * 1024) // 1GB limit for model files
+        .reader();
+
     let mut dest_file = std::fs::File::create(dest_path)?;
-    std::io::copy(&mut response.into_reader(), &mut dest_file)?;
+    std::io::copy(&mut reader, &mut dest_file)?;
 
     eprintln!("Model downloaded to: {:?}", dest_path);
     Ok(())
