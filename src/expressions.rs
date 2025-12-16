@@ -1,3 +1,4 @@
+// src/expressions.rs
 //! Polars expressions for Luxical embeddings.
 
 use polars::prelude::*;
@@ -12,7 +13,6 @@ pub struct EmbedTextKwargs {
     pub model_id: Option<String>,
 }
 
-/// Compute the output type based on the model's embedding dimension.
 fn output_type_func(input_fields: &[Field]) -> PolarsResult<Field> {
     let embedder = get_or_load_model(&None)?;
     let dim = embedder.output_dim();
@@ -23,7 +23,6 @@ fn output_type_func(input_fields: &[Field]) -> PolarsResult<Field> {
     ))
 }
 
-/// Polars expression that embeds a String column using Luxical.
 #[polars_expr(output_type_func=output_type_func)]
 pub fn embed_text(inputs: &[Series], kwargs: EmbedTextKwargs) -> PolarsResult<Series> {
     let s = &inputs[0];
@@ -39,7 +38,6 @@ pub fn embed_text(inputs: &[Series], kwargs: EmbedTextKwargs) -> PolarsResult<Se
 
     let ca = s.str()?;
 
-    // Collect non-null texts with their indices
     let mut texts: Vec<&str> = Vec::with_capacity(ca.len());
     let mut text_indices: Vec<usize> = Vec::with_capacity(ca.len());
 
@@ -50,7 +48,6 @@ pub fn embed_text(inputs: &[Series], kwargs: EmbedTextKwargs) -> PolarsResult<Se
         }
     }
 
-    // Batch embed all texts at once
     let embeddings = if !texts.is_empty() {
         embedder
             .embed_batch(&texts)
@@ -59,14 +56,12 @@ pub fn embed_text(inputs: &[Series], kwargs: EmbedTextKwargs) -> PolarsResult<Se
         ndarray::Array2::zeros((0, dim))
     };
 
-    // Build result: map embeddings back to original row positions
     let mut row_embeddings: Vec<Option<Vec<f32>>> = vec![None; ca.len()];
     for (emb_idx, &orig_idx) in text_indices.iter().enumerate() {
         let emb_row = embeddings.row(emb_idx);
         row_embeddings[orig_idx] = Some(emb_row.to_vec());
     }
 
-    // Build the output series using ListPrimitiveChunkedBuilder
     use polars::chunked_array::builder::ListPrimitiveChunkedBuilder;
 
     let mut builder = ListPrimitiveChunkedBuilder::<Float32Type>::new(
@@ -84,8 +79,6 @@ pub fn embed_text(inputs: &[Series], kwargs: EmbedTextKwargs) -> PolarsResult<Se
     }
 
     let list_series = builder.finish().into_series();
-
-    // Cast to fixed-size array
     let array_series = list_series.cast(&DataType::Array(Box::new(DataType::Float32), dim))?;
 
     Ok(array_series)

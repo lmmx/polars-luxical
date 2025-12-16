@@ -1,3 +1,4 @@
+// src/ngrams.rs
 //! N-gram extraction and hashing utilities.
 
 /// FNV-1a hash of a byte slice, returning i64 (matching Python's implementation).
@@ -57,13 +58,11 @@ mod tests {
 
     #[test]
     fn test_hash_ngram_padding() {
-        // Same n-gram should produce same hash regardless of call order
         let tokens = vec![1u32, 2, 3];
         let hash1 = hash_ngram(&tokens[..2], 5);
         let hash2 = hash_ngram(&tokens[..2], 5);
         assert_eq!(hash1, hash2);
 
-        // Different n-grams should (almost certainly) produce different hashes
         let hash3 = hash_ngram(&tokens[..3], 5);
         assert_ne!(hash1, hash3);
     }
@@ -72,7 +71,6 @@ mod tests {
     fn test_extract_ngrams() {
         let tokens = vec![1u32, 2, 3, 4];
         let hashes = extract_ngrams_hashed(&tokens, 2);
-
         // Should have: 4 unigrams + 3 bigrams = 7 n-grams
         assert_eq!(hashes.len(), 7);
     }

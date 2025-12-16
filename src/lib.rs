@@ -1,7 +1,8 @@
+// src/lib.rs
 use pyo3::prelude::*;
 use pyo3_polars::PolarsAllocator;
 
-mod embedder;
+pub mod embedder;
 mod expressions;
 mod ngrams;
 mod registry;
