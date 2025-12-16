@@ -32,4 +32,4 @@ prepare-peps = "benchmark.parquet:prepare_parquet"
 default-groups = ["dev", "hf"]
 
 [tool.uv.sources]
-polars-fastembed = {path = "../polars-fastembed", editable = true}
+polars-luxical = {path = "..", editable = true}
