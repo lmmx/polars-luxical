@@ -1,15 +1,19 @@
 # Polars Luxical
 
-A high-performance Polars plugin for fast lexical text embeddings, implemented entirely in Rust.
+A high-performance Polars plugin for Luxical text embeddings, implemented in Rust.
 
 ## Overview
 
-This plugin provides Luxical embeddings directly within Polars expressions. Luxical uses:
-- Subword tokenization
-- N-gram feature extraction with TF-IDF weighting
-- Sparse-to-dense neural network projection
+This plugin provides [Luxical](https://github.com/datologyai/luxical) embeddings directly within Polars expressions. Luxical combines:
 
-The result is embeddings that are **10-100x faster** than transformer-based models while maintaining good quality for many retrieval tasks.
+- Subword tokenization (BERT uncased)
+- N-gram feature extraction with TF-IDF weighting  
+- Sparse-to-dense neural network projection via knowledge distillation
+
+Luxical models achieve dramatically higher throughput than transformer-based embedding models while maintaining competitive quality for document-level similarity tasks like clustering, classification, and semantic deduplication.
+
+It should be noted that they were not trained on queries, so you cannot use them for search!
+A demonstration of this is given in the benchmarks, where the results are fast but not useful.
 
 ## Installation
 ```bash
@@ -23,19 +27,19 @@ maturin develop --release
 
 ## Model Download
 
-When you first use a model, it will be automatically downloaded from HuggingFace Hub and cached locally.
+Models are automatically downloaded from HuggingFace Hub and cached locally on first use.
 
-**Cache location:**
+**Cache locations:**
 - **Linux:** `~/.cache/polars-luxical/`
 - **macOS:** `~/Library/Caches/polars-luxical/`
 - **Windows:** `C:\Users\<User>\AppData\Local\polars-luxical\`
 
-The default model `DatologyAI/luxical-one` is approximately 50MB.
-
-To use a local model file instead, pass the path directly:
+To use a local model file instead:
 ```python
-register_model("/path/to/your/model.npz")
+register_model("/path/to/your/model")
 ```
+
+Both `.safetensors` and `.npz` formats are supported.
 
 ## Usage
 ```python
@@ -82,56 +86,49 @@ print(results)
 
 | Model ID | Description | Embedding Dim |
 |----------|-------------|---------------|
-| `DatologyAI/luxical-one` | Default model, good general-purpose embeddings | 256 |
+| `DatologyAI/luxical-one` | English web documents, distilled from snowflake-arctic-embed-m-v2.0 | 192 |
 
 ## Performance
 
-Luxical embeddings are extremely fast because they avoid transformer inference entirely:
+Luxical embeddings avoid transformer inference entirely, achieving throughput up to ~100x faster than large transformer embedding models (e.g., Qwen3-0.6B) and significantly faster than smaller models like MiniLM-L6-v2, particularly on CPU.
 
-| Operation | Time (1000 docs) |
-|-----------|------------------|
-| Tokenization | ~2ms |
-| N-gram + TF-IDF | ~5ms |
-| MLP projection | ~3ms |
-| **Total** | **~10ms** |
-
-Compare to ~500ms+ for MiniLM-L6 on the same hardware.
+For benchmarks and methodology, see the [Luxical technical report](https://arxiv.org/abs/2512.09015).
 
 ## API Reference
 
 ### Functions
 
-`register_model(model_name: str, providers: list[str] | None = None) -> None`
+**`register_model(model_name: str, providers: list[str] | None = None) -> None`**
 
-> Register/load a Luxical model into the global registry. If already loaded, this is a no-op.
->
-> - `model_name`: HuggingFace model ID (e.g., `"DatologyAI/luxical-one"`) or local path to a `.npz` file.
-> - `providers`: Ignored (kept for API compatibility with polars-fastembed).
+Register/load a Luxical model into the global registry. If already loaded, this is a no-op.
 
-`embed_text(expr, *, model_id: str | None = None) -> pl.Expr`
+- `model_name`: HuggingFace model ID (e.g., `"DatologyAI/luxical-one"`) or local path.
+- `providers`: Ignored (kept for API compatibility).
 
-> Embed text using a Luxical model.
->
-> - `expr`: Column expression containing text to embed.
-> - `model_id`: Model name/ID. If `None`, uses the default model.
+**`embed_text(expr, *, model_id: str | None = None) -> pl.Expr`**
 
-`clear_registry() -> None`
+Embed text using a Luxical model.
 
-> Clear all loaded models from the registry (frees memory).
+- `expr`: Column expression containing text to embed.
+- `model_id`: Model name/ID. If `None`, uses the default model.
 
-`list_models() -> list[str]`
+**`clear_registry() -> None`**
 
-> Return a list of currently loaded model names.
+Clear all loaded models from the registry (frees memory).
+
+**`list_models() -> list[str]`**
+
+Return a list of currently loaded model names.
 
 ### DataFrame Namespace
 
-`df.luxical.embed(columns, model_name, output_column="embedding", join_columns=True)`
+**`df.luxical.embed(columns, model_name, output_column="embedding", join_columns=True)`**
 
-> Embed text from specified columns.
+Embed text from specified columns.
 
-`df.luxical.retrieve(query, model_name, embedding_column="embedding", k=None, threshold=None, similarity_metric="cosine", add_similarity_column=True)`
+**`df.luxical.retrieve(query, model_name, embedding_column="embedding", k=None, threshold=None, similarity_metric="cosine", add_similarity_column=True)`**
 
-> Retrieve rows most similar to a query.
+Retrieve rows most similar to a query.
 
 ## License
 

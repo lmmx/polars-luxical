@@ -1,0 +1,35 @@
+[build-system]
+requires = ["uv_build>=0.9.15,<0.10.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+  "pdbpp>=0.11.7"
+]
+hf = [
+  "transformers>=4.57.3"
+]
+
+[project]
+name = "benchmark"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+  {name = "Louis Maddox", email = "louismmx@gmail.com"}
+]
+requires-python = ">=3.13"
+dependencies = [
+  "polars-luxical"
+]
+
+[project.scripts]
+benchmark = "benchmark:main"
+count-pep-tokens = "benchmark.tokens:count_pep_tokens"
+prepare-peps = "benchmark.parquet:prepare_parquet"
+
+[tool.uv]
+default-groups = ["dev", "hf"]
+
+[tool.uv.sources]
+polars-fastembed = {path = "../polars-fastembed", editable = true}
