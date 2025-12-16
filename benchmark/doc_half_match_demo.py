@@ -1,0 +1,83 @@
+"""Half-document retrieval benchmark on the PEP corpus."""
+
+import polars as pl
+from polars_luxical import register_model
+
+from benchmark.dataset import load_peps
+from benchmark.schema import EMB_COL, TEXT_COL
+
+DEFAULT_MODEL_ID = "datologyai/luxical-one"
+
+
+def split_half(text: str):
+    """Split a document roughly in half by words."""
+    words = text.split()
+    mid = len(words) // 2
+    return " ".join(words[:mid]), " ".join(words[mid:])
+
+
+def main():
+    # Load PEP corpus
+    docs_df = load_peps()
+    print(f"Loaded {len(docs_df)} PEPs")
+
+    # Split into first and second halves
+    first_halves = []
+    second_halves = []
+    for text in docs_df[TEXT_COL]:
+        first, second = split_half(text)
+        first_halves.append(first)
+        second_halves.append(second)
+
+    df = pl.DataFrame(
+        {
+            "pep": docs_df["pep"].to_list(),
+            "first_half": first_halves,
+            "second_half": second_halves,
+        },
+    )
+
+    # Register model
+    register_model(DEFAULT_MODEL_ID)
+
+    # Embed all halves
+    df_emb = df.luxical.embed(
+        columns=["first_half", "second_half"],
+        model_name=DEFAULT_MODEL_ID,
+        output_column=EMB_COL,
+    )
+    print("Embedded all document halves.")
+
+    # Evaluate retrieval: rank of the correct second half for each first half
+    ranks = []
+    for row in df_emb.iter_rows(named=True):
+        first_half_text = row["first_half"]
+        second_half_text = row["second_half"]
+
+        retrieved = df_emb.luxical.retrieve(
+            query=first_half_text,
+            model_name=DEFAULT_MODEL_ID,
+            embedding_column=EMB_COL,
+            k=len(df_emb),
+        )
+
+        # Rank of correct second half
+        retrieved_texts = retrieved.select("second_half").to_series().to_list()
+        rank = retrieved_texts.index(second_half_text) + 1  # 1-based
+        ranks.append(rank)
+
+    ranks_series = pl.Series("rank", ranks)
+    top1 = (ranks_series == 1).sum()
+    top5 = (ranks_series <= 5).sum()
+    top1pct = (ranks_series <= max(1, len(df) // 100)).sum()
+    mean_rank = ranks_series.mean()
+
+    print(f"\nHalf-document retrieval results on {len(df)} PEPs:")
+    print(f"Top-1: {top1} ({top1 / len(df) * 100:.2f}%)")
+    print(f"Top-5: {top5} ({top5 / len(df) * 100:.2f}%)")
+    print(f"Top-1%: {top1pct} ({top1pct / len(df) * 100:.2f}%)")
+    print(f"Mean rank of correct half: {mean_rank:.2f}")
+
+
+if __name__ == "__main__":
+    main()

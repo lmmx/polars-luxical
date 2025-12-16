@@ -15,6 +15,27 @@ Luxical models achieve dramatically higher throughput than transformer-based emb
 It should be noted that they were not trained on queries, so you cannot use them for search!
 A demonstration of this is given in the benchmarks, where the results are fast but not useful.
 
+### Similar Document (Half) Retrieval
+
+> Since text chunks from the same document are generally semantically much more similar to one another than they are to other random text chunks...
+> we expect a well-trained embedding model to embed the majority of document halves within the top 1% or so of nearest vectors to their match’s embedding vector.
+
+The example given by Datology is matching document halves, which you can see we get over 97% on:
+
+- Running `doc_half_match_demo.py` from the benchmark subdir:
+
+```
+Loaded 708 PEPs
+Loading model from cache (safetensors): "/home/louis/.cache/polars-luxical/model.safetensors"
+Embedded all document halves.
+
+Half-document retrieval results on 708 PEPs:
+Top-1: 690 (97.46%)
+Top-5: 707 (99.86%)
+Top-1%: 707 (99.86%)
+Mean rank of correct half: 1.05
+```
+
 ## Installation
 ```bash
 pip install polars-luxical
