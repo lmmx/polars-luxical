@@ -50,6 +50,8 @@ def main():
 
     # Evaluate retrieval: rank of the correct second half for each first half
     ranks = []
+    mismatches = []  # Store cases where rank != 1
+
     for row in df_emb.iter_rows(named=True):
         first_half_text = row["first_half"]
         second_half_text = row["second_half"]
@@ -61,11 +63,22 @@ def main():
             k=len(df_emb),
         )
 
-        # Rank of correct second half
         retrieved_texts = retrieved.select("second_half").to_series().to_list()
         rank = retrieved_texts.index(second_half_text) + 1  # 1-based
         ranks.append(rank)
 
+        if rank != 1:
+            mismatches.append(
+                {
+                    "pep": row["pep"],
+                    "first_half": first_half_text,
+                    "true_second_half": second_half_text,
+                    "top_retrieved_second_half": retrieved_texts[0],
+                    "rank": rank,
+                },
+            )
+
+    # Compute metrics
     ranks_series = pl.Series("rank", ranks)
     top1 = (ranks_series == 1).sum()
     top5 = (ranks_series <= 5).sum()
@@ -77,6 +90,14 @@ def main():
     print(f"Top-5: {top5} ({top5 / len(df) * 100:.2f}%)")
     print(f"Top-1%: {top1pct} ({top1pct / len(df) * 100:.2f}%)")
     print(f"Mean rank of correct half: {mean_rank:.2f}")
+
+    # Print mismatches for inspection
+    if mismatches:
+        mismatches_df = pl.DataFrame(mismatches)
+        print("\nCases where the correct second half was NOT ranked 1:")
+        print(mismatches_df)
+    else:
+        print("\nAll first halves retrieved their correct second half as top-1.")
 
 
 if __name__ == "__main__":
