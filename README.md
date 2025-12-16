@@ -171,6 +171,11 @@ Embed text from specified columns.
 
 Retrieve rows most similar to a query.
 
+## See also
+
+- [polars-fastembed](https://github.com/lmmx/polars-fastembed) - a similar package with more embedding models,
+  including ones suitable for search retrieval with a query
+
 ## License
 
 Apache 2.0
