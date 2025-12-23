@@ -73,7 +73,7 @@ jobs:
       - uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
         with:
           key: ${{ runner.os }}-${{ matrix.platform.target }}-manylinux
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: 3.x
       - name: Build wheels
@@ -110,7 +110,7 @@ jobs:
       - uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
         with:
           key: ${{ runner.os }}-${{ matrix.platform.target }}-musllinux
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: 3.x
       - name: Build wheels
@@ -143,7 +143,7 @@ jobs:
       - uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
         with:
           key: ${{ runner.os }}-${{ matrix.platform.target }}
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: 3.x
           architecture: ${{ matrix.platform.target }}
@@ -176,7 +176,7 @@ jobs:
       - uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
         with:
           key: ${{ runner.os }}-${{ matrix.platform.target }}
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: 3.x
       - name: Build wheels
