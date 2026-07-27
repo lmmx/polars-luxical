@@ -27,10 +27,10 @@ else:
     lib = Path(__file__).parent
 
 __all__ = [
-    "embed_text",
-    "register_model",
     "clear_registry",
+    "embed_text",
     "list_models",
+    "register_model",
 ]
 
 
