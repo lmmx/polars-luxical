@@ -50,14 +50,16 @@ from polars_luxical import register_model, embed_text
 register_model("DatologyAI/luxical-one")
 
 # Create a DataFrame
-df = pl.DataFrame({
-    "id": [1, 2, 3],
-    "text": [
-        "Hello world",
-        "Machine learning is fascinating",
-        "Polars and Rust are fast",
-    ],
-})
+df = pl.DataFrame(
+    {
+        "id": [1, 2, 3],
+        "text": [
+            "Hello world",
+            "Machine learning is fascinating",
+            "Polars and Rust are fast",
+        ],
+    }
+)
 
 # Embed text
 df_emb = df.with_columns(
