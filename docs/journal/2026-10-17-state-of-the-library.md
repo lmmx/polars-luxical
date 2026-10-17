@@ -205,6 +205,50 @@ The rest are research threads, not repairs:
 - `2026-10-17-static-embedding-comparison.md`: the MTEB comparison nobody has run.
 - `2026-10-17-quantization.md`: uint8 storage and its effect on dedup thresholds.
 
+## Roadmap
+
+The destination is a Polars-native, very fast **corpus-analysis** library. It should cover
+dedup, clustering, filtering, sampling and document similarity, with worked examples that
+show where Luxical beats conventional embeddings and where it loses. It is not meant to
+become a general embedding and retrieval toolkit. polars-fastembed already covers query
+search. The roadmap orders the work toward that destination. It does not commit to every
+task entry above.
+
+**1. Foundation (planned).** Make the library's claims trustworthy before building on
+them.
+- Make the tests able to fail, fix the 256 → 192 width assertion, and re-enable the Test
+  workflow (`test-suite-health`).
+- Rerun doc-half as genuine half → half, and report the honest number alongside a
+  TF-IDF-only baseline (`doc-half-benchmark`).
+- Correct the README figures that follow from it.
+
+Foundation comes first because every later change, perf work above all, needs tests that
+catch regressions and a benchmark that measures the real task.
+
+**2. Core utility (planned).** Make the model's actual strengths easy to use.
+- Reframe the README and demo around document → document similarity, query-by-example and
+  seed centroids (`query-retrieval-framing`).
+- Add near-duplicate and cluster helpers to the namespace (`dedup-cluster-helpers`).
+- Build one showpiece: a SemDeDup pass on a large corpus, around 1M FineWeb documents,
+  timed end to end on a laptop CPU.
+
+The inference perf fixes (`inference-performance`) join this phase when the showpiece needs
+them. A 1M-document run is where single-threaded inference and the strided first-layer
+reads start to matter. Custom model loading (`custom-model-loading`) waits until a second
+model actually exists.
+
+**3. Research (speculative).** Each of these is an experiment that may change the plan. None
+is a planned feature.
+- A classifier workflow on frozen embeddings (`classifier-recipe`). This is the closest to
+  core utility, and it is the paper's headline result.
+- Quantization effects on dedup thresholds (`quantization`). This matters once phase 2 is
+  storing embeddings at scale.
+- A comparison against static embedding models (`static-embedding-comparison`). This
+  establishes where Luxical wins and loses, and is the evidence the README should cite.
+- Query-aware distillation (`query-aware-distillation`), pursued only if the comparison
+  shows a large gap between document tasks and query tasks that training could plausibly
+  close. Even then it pulls toward the general-toolkit direction this roadmap avoids.
+
 ## Sources
 
 - DatologyAI blog, "Introducing Luxical Embeddings and the Luxical-One Model":
