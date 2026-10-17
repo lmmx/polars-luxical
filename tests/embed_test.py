@@ -3,13 +3,24 @@
 import polars as pl
 import pytest
 
+MODEL_ID = "datologyai/luxical-one"
+EMBEDDING_DIM = 192
+
+
+def load_model_or_skip():
+    """Register the model, skipping the test if it cannot be downloaded or loaded."""
+    from polars_luxical import register_model
+
+    try:
+        register_model(MODEL_ID)
+    except RuntimeError as e:
+        pytest.skip(f"Model not available: {e}")
+
 
 def test_embed_text_basic():
     """Test basic embedding functionality."""
-    from polars_luxical import embed_text, register_model
+    from polars_luxical import embed_text
 
-    # Use a local model file for testing (you'd create this)
-    # For now, we test that the API works with a mock
     df = pl.DataFrame(
         {
             "id": [1, 2, 3],
@@ -21,27 +32,19 @@ def test_embed_text_basic():
         },
     )
 
-    # This would require a real model - skip if not available
-    try:
-        register_model("datologyai/luxical-one")
-        result = df.with_columns(
-            embed_text("text", model_id="datologyai/luxical-one").alias("embedding"),
-        )
+    load_model_or_skip()
+    result = df.with_columns(
+        embed_text("text", model_id=MODEL_ID).alias("embedding"),
+    )
 
-        assert "embedding" in result.columns
-        assert result["embedding"].dtype == pl.Array(
-            pl.Float32,
-            width=256,
-        )  # Adjust dim as needed
-        assert len(result) == 3
-
-    except Exception as e:
-        pytest.skip(f"Model not available: {e}")
+    assert "embedding" in result.columns
+    assert result["embedding"].dtype == pl.Array(pl.Float32, shape=EMBEDDING_DIM)
+    assert len(result) == 3
 
 
 def test_embed_handles_nulls():
     """Test that null values are handled correctly."""
-    from polars_luxical import embed_text, register_model
+    from polars_luxical import embed_text
 
     df = pl.DataFrame(
         {
@@ -49,25 +52,19 @@ def test_embed_handles_nulls():
         },
     )
 
-    try:
-        register_model("datologyai/luxical-one")
-        result = df.with_columns(
-            embed_text("text", model_id="datologyai/luxical-one").alias("embedding"),
-        )
+    load_model_or_skip()
+    result = df.with_columns(
+        embed_text("text", model_id=MODEL_ID).alias("embedding"),
+    )
 
-        # Check that null input produces null output
-        assert result["embedding"][1] is None
-        assert result["embedding"][0] is not None
-        assert result["embedding"][2] is not None
-
-    except Exception as e:
-        pytest.skip(f"Model not available: {e}")
+    # Check that null input produces null output
+    assert result["embedding"][1] is None
+    assert result["embedding"][0] is not None
+    assert result["embedding"][2] is not None
 
 
 def test_namespace_api():
     """Test the DataFrame namespace API."""
-    from polars_luxical import register_model
-
     df = pl.DataFrame(
         {
             "id": [1, 2],
@@ -75,29 +72,25 @@ def test_namespace_api():
         },
     )
 
-    try:
-        register_model("datologyai/luxical-one")
+    load_model_or_skip()
 
-        # Test embed
-        result = df.luxical.embed(
-            columns="text",
-            model_name="datologyai/luxical-one",
-            output_column="emb",
-        )
-        assert "emb" in result.columns
+    # Test embed
+    result = df.luxical.embed(
+        columns="text",
+        model_name=MODEL_ID,
+        output_column="emb",
+    )
+    assert "emb" in result.columns
 
-        # Test retrieve
-        retrieved = result.luxical.retrieve(
-            query="Greeting",
-            model_name="datologyai/luxical-one",
-            embedding_column="emb",
-            k=1,
-        )
-        assert len(retrieved) == 1
-        assert "similarity" in retrieved.columns
-
-    except Exception as e:
-        pytest.skip(f"Model not available: {e}")
+    # Test retrieve
+    retrieved = result.luxical.retrieve(
+        query="Greeting",
+        model_name=MODEL_ID,
+        embedding_column="emb",
+        k=1,
+    )
+    assert len(retrieved) == 1
+    assert "similarity" in retrieved.columns
 
 
 def test_registry_operations():
@@ -107,17 +100,12 @@ def test_registry_operations():
     clear_registry()
     assert list_models() == []
 
-    try:
-        register_model("datologyai/luxical-one")
-        models = list_models()
-        assert "datologyai/luxical-one" in models
+    load_model_or_skip()
+    assert MODEL_ID in list_models()
 
-        # Registering again should be a no-op
-        register_model("datologyai/luxical-one")
-        assert len(list_models()) == 1
+    # Registering again should be a no-op
+    register_model(MODEL_ID)
+    assert len(list_models()) == 1
 
-        clear_registry()
-        assert list_models() == []
-
-    except Exception as e:
-        pytest.skip(f"Model not available: {e}")
+    clear_registry()
+    assert list_models() == []
