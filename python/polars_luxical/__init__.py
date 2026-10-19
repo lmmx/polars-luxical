@@ -22,8 +22,9 @@ if TYPE_CHECKING:
     from polars.type_aliases import IntoExpr
 
 #: Default cosine similarity at or above which two documents count as near-duplicates.
-#: On FineWeb, 0.95 recalls 98% of lightly edited copies while flagging about 1 in 600
-#: untouched documents, mostly templated or spun pages (benchmark/dedup_eval.py).
+#: On 20k FineWeb documents, 0.95 recalls 98% of lightly edited copies while flagging
+#: about 1 in 600 untouched documents, mostly templated or spun pages; the share grows
+#: with corpus size (2% of a 1M-document shard). See benchmark/dedup_eval.py.
 DEFAULT_DUPLICATE_THRESHOLD = 0.95
 
 # Determine the correct plugin path
