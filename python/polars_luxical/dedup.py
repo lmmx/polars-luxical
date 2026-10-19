@@ -138,10 +138,12 @@ def assign_clusters(
 
 
 def _resolve_method(method: Method, n: int) -> Literal["exact", "clustered"]:
+    if method not in ("auto", "exact", "clustered"):
+        raise ValueError(f"Unknown method: {method!r}")
+    if n == 0:
+        return "exact"  # nothing to cluster
     if method == "auto":
         return "exact" if n <= AUTO_EXACT_MAX_ROWS else "clustered"
-    if method not in ("exact", "clustered"):
-        raise ValueError(f"Unknown method: {method!r}")
     return method
 
 

@@ -208,7 +208,7 @@ bear on what comes next, and both are decisions for the project rather than this
 - `for_each_ngram_hash` streams FNV-1a state per n-gram start without allocating, and a Rust unit test checks the hashes against the padded `hash_ngram` reference (src/ngrams.rs:47-60, src/ngrams.rs:124-138)
 - The n-gram index is a `HashMap<i64, u32>` with an identity hasher (src/ngrams.rs:71-90, src/embedder/model.rs:17)
 - `mark_duplicates`, `dedup` and `near_duplicates` are DataFrame namespace methods with default threshold 0.95 (python/polars_luxical/__init__.py:27, python/polars_luxical/__init__.py:232-349)
-- `most_similar_earlier` and `similar_pairs` run exact blocked search up to 50,000 rows and clustered search above that, with each row assigned to its 2 nearest spherical k-means clusters (python/polars_luxical/dedup.py:24-26, python/polars_luxical/dedup.py:163-219)
+- `most_similar_earlier` and `similar_pairs` run exact blocked search up to 50,000 rows and clustered search above that, with each row assigned to its 2 nearest spherical k-means clusters (python/polars_luxical/dedup.py:24-26, python/polars_luxical/dedup.py:165-221)
 - `retrieve` accepts a string, a list of strings (mean embedding) or an embedding vector (python/polars_luxical/__init__.py:142-222)
 - `benchmark/doc_half_match_demo.py` embeds first and second halves separately and reports Luxical half->half, Luxical half->whole and TF-IDF half->half on PEPs or a FineWeb shard
 - `benchmark/dedup_eval.py` reports recall on injected edited copies and originals flagged per threshold for Luxical and TF-IDF

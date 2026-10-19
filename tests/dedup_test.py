@@ -157,3 +157,16 @@ def test_clustered_pairs_match_exact_without_repeats():
     for e, c in zip(exact, clustered):
         np.testing.assert_allclose(c, e, rtol=1e-5)
     assert len(set(zip(clustered[0], clustered[1]))) == len(clustered[0])
+
+
+@pytest.mark.parametrize("method", ["exact", "clustered"])
+@pytest.mark.parametrize("rows", [[], [None, None]])
+def test_empty_or_all_null_frames(method, rows):
+    df = pl.DataFrame(
+        {"embedding": pl.Series(rows, dtype=pl.Array(pl.Float32, DIM))},
+    )
+    assert df.luxical.mark_duplicates(method=method)[
+        "duplicate_of"
+    ].null_count() == len(rows)
+    assert df.luxical.dedup(method=method).height == len(rows)
+    assert df.luxical.near_duplicates(method=method).height == 0
