@@ -1,52 +1,54 @@
-"""Demo script for polars-luxical."""
+"""Demo script for polars-luxical: document similarity and near-duplicate detection."""
 
 import polars as pl
 from polars_luxical import register_model
 
-# Create sample data
+model_id = "datologyai/luxical-one"
+register_model(model_id)  # downloads and caches the model on first use
+
+article = (
+    "Polars is a DataFrame library written in Rust. It uses Apache Arrow as its "
+    "memory model and supports lazy evaluation, query optimisation and parallel "
+    "execution, so pipelines written with its expression API use every core."
+)
 df = pl.DataFrame(
     {
         "id": [1, 2, 3, 4, 5],
         "text": [
-            "The quick brown fox jumps over the lazy dog",
-            "Machine learning models process text data",
-            "Polars is a fast DataFrame library written in Rust",
-            "Python is a popular programming language",
-            "Natural language processing enables text understanding",
+            article,
+            (
+                "Sourdough needs flour, water, salt and a lively starter. Mix, fold, "
+                "prove overnight in the fridge and bake in a very hot oven."
+            ),
+            # A lightly edited copy of the first article, as found across web crawls
+            "Home | Blog | Contact\n" + article.replace("Rust", "the Rust language"),
+            (
+                "The 1966 World Cup final was played at Wembley Stadium, where England "
+                "beat West Germany 4-2 after extra time."
+            ),
+            (
+                "Bread baking at home: combine flour, water and yeast, knead, let the "
+                "dough rise, shape it and bake until the crust is golden."
+            ),
         ],
     },
 )
 
-print("Input DataFrame:")
-print(df)
-print()
+# Embed every document
+df = df.luxical.embed(columns="text", model_name=model_id)
 
-# Register the model (downloads if needed)
-model_id = "datologyai/luxical-one"
-print(f"Loading model: {model_id}")
-register_model(model_id)
+# Near-duplicates: row 3 is flagged as a copy of row 1
+marked = df.luxical.mark_duplicates()
+print(marked.select("id", "duplicate_of", "duplicate_of_similarity", "text"))
 
-# Embed the text
-print("\nEmbedding text...")
-df_emb = df.luxical.embed(
-    columns="text",
+# Keep the first of each group of near-duplicates
+print(df.luxical.dedup().select("id", "text"))
+
+# Query by example: use a document (or several seed documents) as the query.
+# Luxical compares documents with documents; it was not trained on short queries.
+similar = df.luxical.retrieve(
+    query=["Homemade bread recipe: flour, water, yeast and a hot oven."],
     model_name=model_id,
-    output_column="embedding",
+    k=2,
 )
-
-print("\nEmbedded DataFrame:")
-print(df_emb)
-print()
-
-# Retrieve similar documents
-query = "How do computers understand language?"
-print(f"Query: {query}")
-print("\nTop 3 similar documents:")
-
-results = df_emb.luxical.retrieve(
-    query=query,
-    model_name=model_id,
-    embedding_column="embedding",
-    k=3,
-)
-print(results.select(["id", "text", "similarity"]))
+print(similar.select("id", "similarity", "text"))

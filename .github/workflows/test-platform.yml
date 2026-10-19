@@ -15,10 +15,6 @@ on:
       target:
         required: true
         type: string
-      features:
-        required: false
-        type: string
-        default: ""
 
 jobs:
   test:
@@ -51,11 +47,26 @@ jobs:
           workspaces: .
           key: ${{ inputs.os }}-${{ inputs.target }}-${{ matrix.python-version }}
 
-      - name: Create venv and install dependencies
-        run: uv sync --group test
+      - name: Cache Luxical model weights
+        uses: actions/cache@v4
+        with:
+          path: .cache/polars-luxical
+          key: luxical-one-safetensors-v1
+          enableCrossOsArchive: true
 
-      - name: Build and install extension
-        run: uv run --no-sync --frozen maturin develop --release ${{ inputs.features }}
+      - name: Create venv, build and install extension
+        run: uv sync --frozen --group test
+
+      - name: Run Rust unit tests
+        if: inputs.os == 'linux'
+        env:
+          PYO3_PYTHON: ${{ github.workspace }}/.venv/bin/python
+        # The test binary links libpython, which lives in the uv-managed interpreter's LIBDIR
+        run: |
+          export LD_LIBRARY_PATH="$("$PYO3_PYTHON" -c 'import sysconfig; print(sysconfig.get_config_var("LIBDIR"))')"
+          cargo test --release --no-default-features
 
       - name: Run tests
+        env:
+          POLARS_LUXICAL_CACHE_DIR: ${{ github.workspace }}/.cache/polars-luxical
         run: uv run --no-sync --frozen pytest -s -v

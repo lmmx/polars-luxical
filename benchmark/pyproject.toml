@@ -20,7 +20,8 @@ authors = [
 ]
 requires-python = ">=3.13"
 dependencies = [
-  "polars-luxical"
+  "polars-luxical",
+  "scikit-learn>=1.5"
 ]
 
 [project.scripts]

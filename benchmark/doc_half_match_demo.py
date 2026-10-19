@@ -1,108 +1,141 @@
-"""Half-document retrieval benchmark on the PEP corpus."""
+"""Half-document matching benchmark on the PEP corpus (or a FineWeb shard).
 
+Each document is split in half by words. Every first half is used as a query against all
+second halves, and we record the rank of its own second half. This is the task from
+the Luxical report ("document halves"), with both halves embedded separately.
+
+Three settings are reported side by side:
+
+- luxical half->half: the real task
+- luxical half->whole: the second-half target embedded together with the first half,
+  i.e. the target contains the query text (what earlier versions of this script did)
+- tf-idf half->half: word 1-2 gram TF-IDF cosine baseline (scikit-learn)
+
+Usage: uv run python doc_half_match_demo.py [--parquet FINEWEB.parquet --docs 5000]
+"""
+
+import argparse
+import time
+
+import numpy as np
 import polars as pl
 from benchmark.dataset import load_peps
-from benchmark.schema import EMB_COL, TEXT_COL
-from polars_luxical import register_model
+from benchmark.schema import TEXT_COL
+from polars_luxical import embed_text, register_model
+from sklearn.feature_extraction.text import TfidfVectorizer
 
 DEFAULT_MODEL_ID = "datologyai/luxical-one"
 
 
-def split_half(text: str):
+def split_half(text: str) -> tuple[str, str]:
     """Split a document roughly in half by words."""
     words = text.split()
     mid = len(words) // 2
     return " ".join(words[:mid]), " ".join(words[mid:])
 
 
-def main():
-    # Load PEP corpus
-    docs_df = load_peps()
-    print(f"Loaded {len(docs_df)} PEPs")
+def ranks_of_matches(queries, targets, block: int = 2048) -> np.ndarray:
+    """1-based rank of target i among all targets for query i, in row blocks.
 
-    # Split into first and second halves
-    first_halves = []
-    second_halves = []
-    for text in docs_df[TEXT_COL]:
-        first, second = split_half(text)
-        first_halves.append(first)
-        second_halves.append(second)
-
-    df = pl.DataFrame(
-        {
-            "pep": docs_df["pep"].to_list(),
-            "first_half": first_halves,
-            "second_half": second_halves,
-        },
-    )
-
-    # Register model
-    register_model(DEFAULT_MODEL_ID)
-
-    # Embed all halves
-    df_emb = df.luxical.embed(
-        columns=["first_half", "second_half"],
-        model_name=DEFAULT_MODEL_ID,
-        output_column=EMB_COL,
-    )
-    print("Embedded all document halves.")
-
-    # Evaluate retrieval: rank of the correct second half for each first half
+    Works for dense arrays and scipy sparse matrices; ties count against the match.
+    """
     ranks = []
-    mismatches = []  # Store cases where rank != 1
+    for i0 in range(0, queries.shape[0], block):
+        i1 = min(i0 + block, queries.shape[0])
+        sim = queries[i0:i1] @ targets.T
+        sim = sim.toarray() if hasattr(sim, "toarray") else sim
+        diag = sim[np.arange(i1 - i0), np.arange(i0, i1)][:, None]
+        ranks.append(1 + (sim > diag).sum(axis=1))
+    return np.concatenate(ranks)
 
-    for row in df_emb.iter_rows(named=True):
-        first_half_text = row["first_half"]
-        second_half_text = row["second_half"]
 
-        retrieved = df_emb.luxical.retrieve(
-            query=first_half_text,
-            model_name=DEFAULT_MODEL_ID,
-            embedding_column=EMB_COL,
-            k=len(df_emb),
+def summarise(name: str, ranks: np.ndarray) -> dict:
+    n = len(ranks)
+    top1pct = max(1, n // 100)
+    return {
+        "setting": name,
+        "top1": float((ranks == 1).mean()),
+        "top5": float((ranks <= 5).mean()),
+        f"top{top1pct}(1%)": float((ranks <= top1pct).mean()),
+        "mean_rank": float(ranks.mean()),
+        "median_rank": float(np.median(ranks)),
+    }
+
+
+def embed(df: pl.DataFrame, col: str) -> np.ndarray:
+    return df.select(embed_text(col, model_id=DEFAULT_MODEL_ID)).to_series().to_numpy()
+
+
+def load_docs(parquet: str | None, n_docs: int) -> pl.DataFrame:
+    """PEPs, or the first `n_docs` FineWeb documents of at least 100 words."""
+    if parquet is None:
+        return load_peps().select(pl.col("pep").alias("doc"), TEXT_COL)
+    return (
+        pl.scan_parquet(parquet)
+        .select(pl.col("id").alias("doc"), TEXT_COL)
+        .filter(pl.col(TEXT_COL).str.split(" ").list.len() >= 100)
+        .head(n_docs)
+        .collect()
+    )
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--parquet", help="FineWeb parquet shard (default: PEPs)")
+    parser.add_argument("--docs", type=int, default=5000)
+    args = parser.parse_args()
+
+    docs_df = load_docs(args.parquet, args.docs)
+    halves = [split_half(t) for t in docs_df[TEXT_COL]]
+    df = docs_df.select("doc").with_columns(
+        pl.Series("first_half", [a for a, _ in halves]),
+        pl.Series("second_half", [b for _, b in halves]),
+        pl.Series("whole", [f"{a} {b}" for a, b in halves]),
+    )
+    print(f"Loaded {len(df)} documents")
+
+    register_model(DEFAULT_MODEL_ID)
+    start = time.perf_counter()
+    first = embed(df, "first_half")
+    second = embed(df, "second_half")
+    whole = embed(df, "whole")
+    print(f"Embedded 3 x {len(df)} texts in {time.perf_counter() - start:.2f}s")
+
+    lux_ranks = ranks_of_matches(first, second)
+    results = [
+        summarise("luxical half->half", lux_ranks),
+        summarise("luxical half->whole", ranks_of_matches(first, whole)),
+    ]
+
+    vectorizer = TfidfVectorizer(ngram_range=(1, 2), sublinear_tf=True, min_df=2)
+    vectorizer.fit(df["first_half"].to_list() + df["second_half"].to_list())
+    tf_first = vectorizer.transform(df["first_half"].to_list())
+    tf_second = vectorizer.transform(df["second_half"].to_list())
+    results.append(
+        summarise(
+            "tf-idf half->half",
+            ranks_of_matches(tf_first, tf_second),
+        ),
+    )
+
+    with pl.Config(tbl_cols=-1, float_precision=4, tbl_width_chars=200):
+        print(pl.DataFrame(results))
+
+        top_other = np.concatenate(
+            [
+                np.argmax(first[i : i + 2048] @ second.T, axis=1)
+                for i in range(0, len(first), 2048)
+            ],
         )
-
-        retrieved_texts = retrieved.select("second_half").to_series().to_list()
-        retrieved_peps = (
-            retrieved.select("pep").to_series().to_list()
-        )  # IDs of retrieved PEPs
-        rank = retrieved_texts.index(second_half_text) + 1  # 1-based
-        ranks.append(rank)
-
-        if rank != 1:
-            mismatches.append(
-                {
-                    "pep": row["pep"],
-                    "first_half": first_half_text,
-                    "true_second_half": second_half_text,
-                    "top_retrieved_second_half": retrieved_texts[0],
-                    "top_retrieved_pep": retrieved_peps[
-                        0
-                    ],  # ID of incorrectly top-ranked PEP
-                    "rank": rank,
-                },
-            )
-
-    # Compute metrics
-    ranks_series = pl.Series("rank", ranks)
-    top1 = (ranks_series == 1).sum()
-    top5 = (ranks_series <= 5).sum()
-    top1pct = (ranks_series <= max(1, len(df) // 100)).sum()
-    mean_rank = ranks_series.mean()
-
-    print(f"\nHalf-document retrieval results on {len(df)} PEPs:")
-    print(f"Top-1: {top1} ({top1 / len(df) * 100:.2f}%)")
-    print(f"Top-5: {top5} ({top5 / len(df) * 100:.2f}%)")
-    print(f"Top-1%: {top1pct} ({top1pct / len(df) * 100:.2f}%)")
-    print(f"Mean rank of correct half: {mean_rank:.2f}")
-
-    # Print mismatches for inspection
-    if mismatches:
-        mismatches_df = pl.DataFrame(mismatches)
-        print("\nCases where the correct second half was NOT ranked 1:")
-        print(mismatches_df)
-    else:
-        print("\nAll first halves retrieved their correct second half as top-1.")
+        top_doc = pl.Series("top_retrieved_doc", df["doc"].to_numpy()[top_other])
+        misses = (
+            df.with_columns(rank=pl.Series(lux_ranks), top_retrieved_doc=top_doc)
+            .filter(pl.col("rank") > 1)
+            .select("doc", "top_retrieved_doc", "rank")
+            .sort("rank", descending=True)
+        )
+        print(f"\nluxical half->half: {len(misses)} documents not matched at rank 1")
+        print(misses.head(20))
 
 
 if __name__ == "__main__":
