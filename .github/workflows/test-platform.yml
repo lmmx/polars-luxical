@@ -61,7 +61,10 @@ jobs:
         if: inputs.os == 'linux'
         env:
           PYO3_PYTHON: ${{ github.workspace }}/.venv/bin/python
-        run: cargo test --release --no-default-features
+        # The test binary links libpython, which lives in the uv-managed interpreter's LIBDIR
+        run: |
+          export LD_LIBRARY_PATH="$("$PYO3_PYTHON" -c 'import sysconfig; print(sysconfig.get_config_var("LIBDIR"))')"
+          cargo test --release --no-default-features
 
       - name: Run tests
         env:
