@@ -6,7 +6,6 @@ pub mod embedder;
 mod expressions;
 mod ngrams;
 mod registry;
-mod tfidf;
 
 #[pymodule]
 fn _polars_luxical(m: &Bound<'_, PyModule>) -> PyResult<()> {

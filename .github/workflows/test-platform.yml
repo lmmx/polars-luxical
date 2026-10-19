@@ -57,6 +57,12 @@ jobs:
       - name: Create venv, build and install extension
         run: uv sync --frozen --group test
 
+      - name: Run Rust unit tests
+        if: inputs.os == 'linux'
+        env:
+          PYO3_PYTHON: ${{ github.workspace }}/.venv/bin/python
+        run: cargo test --release --no-default-features
+
       - name: Run tests
         env:
           POLARS_LUXICAL_CACHE_DIR: ${{ github.workspace }}/.cache/polars-luxical

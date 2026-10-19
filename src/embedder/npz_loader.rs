@@ -1,7 +1,6 @@
 // src/embedder/npz_loader.rs
 //! NPZ format loader for Luxical models.
 
-use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufReader, Read, Seek};
 use std::path::Path;
@@ -9,7 +8,7 @@ use std::path::Path;
 use ndarray::{Array1, Array2};
 use tokenizers::Tokenizer;
 
-use super::model::{LuxicalEmbedder, LuxicalError, Result};
+use super::model::{LuxicalEmbedder, LuxicalError, NgramIndex, Result};
 
 /// Load a Luxical model from an NPZ file.
 pub fn load_from_npz<P: AsRef<Path>>(path: P) -> Result<LuxicalEmbedder> {
@@ -41,7 +40,8 @@ fn load_from_reader<R: Read + Seek>(reader: R) -> Result<LuxicalEmbedder> {
     let (keys, _) = npz.read_array_i64("ngram_hash_to_ngram_idx_keys")?;
     let (values, _) = npz.read_array_u32("ngram_hash_to_ngram_idx_values")?;
 
-    let mut ngram_hash_to_idx: HashMap<i64, u32> = HashMap::with_capacity(keys.len());
+    let mut ngram_hash_to_idx =
+        NgramIndex::with_capacity_and_hasher(keys.len(), Default::default());
     ngram_hash_to_idx.extend(keys.into_iter().zip(values.into_iter()));
 
     // Load IDF values
@@ -65,17 +65,19 @@ fn load_from_reader<R: Read + Seek>(reader: R) -> Result<LuxicalEmbedder> {
             .map_err(|e| LuxicalError::Parse(e.to_string()))?;
         layers.push(layer);
     }
+    if layers.is_empty() {
+        return Err(LuxicalError::Parse("Model has no layers".into()));
+    }
+    let first_layer = layers.remove(0);
 
-    let output_dim = layers.last().map(|l| l.nrows()).unwrap_or(0);
-
-    Ok(LuxicalEmbedder {
+    LuxicalEmbedder::new(
         tokenizer,
         max_ngram_length,
         ngram_hash_to_idx,
         idf_values,
+        first_layer.view(),
         layers,
-        output_dim,
-    })
+    )
 }
 
 // ============================================================================

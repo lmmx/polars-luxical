@@ -1,16 +1,15 @@
 // src/embedder/safetensors_loader.rs
 //! Safetensors format loader for Luxical models - supports memory-mapped loading.
 
-use std::collections::HashMap;
 use std::fs::File;
 use std::path::Path;
 
 use memmap2::Mmap;
-use ndarray::{Array1, Array2};
+use ndarray::{Array1, ArrayView2};
 use safetensors::SafeTensors;
 use tokenizers::Tokenizer;
 
-use super::model::{LuxicalEmbedder, LuxicalError, Result};
+use super::model::{LuxicalEmbedder, LuxicalError, NgramIndex, Result};
 
 /// Load a Luxical model from a safetensors file using memory mapping.
 pub fn load_from_safetensors<P: AsRef<Path>>(path: P) -> Result<LuxicalEmbedder> {
@@ -67,7 +66,8 @@ pub fn load_from_safetensors<P: AsRef<Path>>(path: P) -> Result<LuxicalEmbedder>
     let keys: &[i64] = bytemuck::cast_slice(keys_tensor.data());
     let vals: &[i64] = bytemuck::cast_slice(vals_tensor.data());
 
-    let mut ngram_hash_to_idx: HashMap<i64, u32> = HashMap::with_capacity(keys.len());
+    let mut ngram_hash_to_idx =
+        NgramIndex::with_capacity_and_hasher(keys.len(), Default::default());
     ngram_hash_to_idx.extend(keys.iter().copied().zip(vals.iter().map(|&v| v as u32)));
 
     // Load IDF values
@@ -84,7 +84,8 @@ pub fn load_from_safetensors<P: AsRef<Path>>(path: P) -> Result<LuxicalEmbedder>
     let num_layers_data: &[i64] = bytemuck::cast_slice(num_layers_tensor.data());
     let num_layers = num_layers_data[0] as usize;
 
-    let mut layers = Vec::with_capacity(num_layers);
+    let mut first_layer: Option<ArrayView2<f32>> = None;
+    let mut dense_layers = Vec::with_capacity(num_layers.saturating_sub(1));
     for i in 0..num_layers {
         let layer_name = format!("embedder.nn_layer_{}", i);
         let layer_tensor = tensors
@@ -99,20 +100,25 @@ pub fn load_from_safetensors<P: AsRef<Path>>(path: P) -> Result<LuxicalEmbedder>
             )));
         }
 
+        // The first layer is read straight from the mmap and transposed once
         let layer_data: &[f32] = bytemuck::cast_slice(layer_tensor.data());
-        let layer = Array2::from_shape_vec((shape[0], shape[1]), layer_data.to_vec())
+        let layer = ArrayView2::from_shape((shape[0], shape[1]), layer_data)
             .map_err(|e| LuxicalError::Parse(e.to_string()))?;
-        layers.push(layer);
+        if i == 0 {
+            first_layer = Some(layer);
+        } else {
+            dense_layers.push(layer.to_owned());
+        }
     }
+    let first_layer =
+        first_layer.ok_or_else(|| LuxicalError::Safetensors("Model has no layers".into()))?;
 
-    let output_dim = layers.last().map(|l| l.nrows()).unwrap_or(0);
-
-    Ok(LuxicalEmbedder {
+    LuxicalEmbedder::new(
         tokenizer,
         max_ngram_length,
         ngram_hash_to_idx,
         idf_values,
-        layers,
-        output_dim,
-    })
+        first_layer,
+        dense_layers,
+    )
 }
