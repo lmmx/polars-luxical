@@ -38,6 +38,9 @@ struct ModelInfo {
 }
 
 fn cache_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("POLARS_LUXICAL_CACHE_DIR") {
+        return PathBuf::from(dir);
+    }
     dirs::cache_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("polars-luxical")

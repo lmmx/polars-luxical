@@ -1,23 +1,10 @@
 """Tests for polars-luxical embedding functionality."""
 
 import polars as pl
-import pytest
-
-MODEL_ID = "datologyai/luxical-one"
-EMBEDDING_DIM = 192
+from conftest import EMBEDDING_DIM
 
 
-def load_model_or_skip():
-    """Register the model, skipping the test if it cannot be downloaded or loaded."""
-    from polars_luxical import register_model
-
-    try:
-        register_model(MODEL_ID)
-    except RuntimeError as e:
-        pytest.skip(f"Model not available: {e}")
-
-
-def test_embed_text_basic():
+def test_embed_text_basic(model_id):
     """Test basic embedding functionality."""
     from polars_luxical import embed_text
 
@@ -32,9 +19,8 @@ def test_embed_text_basic():
         },
     )
 
-    load_model_or_skip()
     result = df.with_columns(
-        embed_text("text", model_id=MODEL_ID).alias("embedding"),
+        embed_text("text", model_id=model_id).alias("embedding"),
     )
 
     assert "embedding" in result.columns
@@ -42,7 +28,7 @@ def test_embed_text_basic():
     assert len(result) == 3
 
 
-def test_embed_handles_nulls():
+def test_embed_handles_nulls(model_id):
     """Test that null values are handled correctly."""
     from polars_luxical import embed_text
 
@@ -52,9 +38,8 @@ def test_embed_handles_nulls():
         },
     )
 
-    load_model_or_skip()
     result = df.with_columns(
-        embed_text("text", model_id=MODEL_ID).alias("embedding"),
+        embed_text("text", model_id=model_id).alias("embedding"),
     )
 
     # Check that null input produces null output
@@ -63,7 +48,7 @@ def test_embed_handles_nulls():
     assert result["embedding"][2] is not None
 
 
-def test_namespace_api():
+def test_namespace_api(model_id):
     """Test the DataFrame namespace API."""
     df = pl.DataFrame(
         {
@@ -72,12 +57,10 @@ def test_namespace_api():
         },
     )
 
-    load_model_or_skip()
-
     # Test embed
     result = df.luxical.embed(
         columns="text",
-        model_name=MODEL_ID,
+        model_name=model_id,
         output_column="emb",
     )
     assert "emb" in result.columns
@@ -85,7 +68,7 @@ def test_namespace_api():
     # Test retrieve
     retrieved = result.luxical.retrieve(
         query="Greeting",
-        model_name=MODEL_ID,
+        model_name=model_id,
         embedding_column="emb",
         k=1,
     )
@@ -93,18 +76,18 @@ def test_namespace_api():
     assert "similarity" in retrieved.columns
 
 
-def test_registry_operations():
+def test_registry_operations(model_id):
     """Test model registry functions."""
     from polars_luxical import clear_registry, list_models, register_model
 
     clear_registry()
     assert list_models() == []
 
-    load_model_or_skip()
-    assert MODEL_ID in list_models()
+    register_model(model_id)
+    assert model_id in list_models()
 
     # Registering again should be a no-op
-    register_model(MODEL_ID)
+    register_model(model_id)
     assert len(list_models()) == 1
 
     clear_registry()
