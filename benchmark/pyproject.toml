@@ -16,7 +16,7 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 authors = [
-  {name = "Louis Maddox", email = "louismmx@gmail.com"}
+  { name = "Louis Maddox", email = "louismmx@gmail.com" }
 ]
 requires-python = ">=3.13"
 dependencies = [
@@ -32,4 +32,4 @@ prepare-peps = "benchmark.parquet:prepare_parquet"
 default-groups = ["dev", "hf"]
 
 [tool.uv.sources]
-polars-luxical = {path = "..", editable = true}
+polars-luxical = { path = "..", editable = true }
